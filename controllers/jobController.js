@@ -44,21 +44,15 @@ const getJobs = async (req, res) => {
                 { createdBy: req.user._id },
                 { foremanId: req.user._id }
             ];
-        } else if (req.user.role === 'FOREMAN') {
+        } else if (['FOREMAN', 'WORKER'].includes(req.user.role)) {
             const JobTask = require('../models/JobTask');
             const userTasks = await JobTask.find({
                 $or: [{ assignedTo: req.user._id }, { assignedForeman: req.user._id }]
             }).select('jobId');
             const taskJobIds = userTasks.map(t => t.jobId);
+            
             filter.$or = [
                 { foremanId: req.user._id },
-                { _id: { $in: taskJobIds } }
-            ];
-        } else if (req.user.role === 'WORKER') {
-            const JobTask = require('../models/JobTask');
-            const userTasks = await JobTask.find({ assignedTo: req.user._id }).select('jobId');
-            const taskJobIds = userTasks.map(t => t.jobId);
-            filter.$or = [
                 { assignedWorkers: { $in: [req.user._id] } },
                 { _id: { $in: taskJobIds } }
             ];

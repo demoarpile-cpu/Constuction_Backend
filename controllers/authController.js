@@ -250,6 +250,10 @@ const updateUser = async (req, res, next) => {
         // Update fields
         Object.keys(req.body).forEach(key => {
             if (key !== '_id' && key !== 'companyId') {
+                // Ignore empty password strings to prevent validation errors
+                if (key === 'password' && (req.body[key] === '' || req.body[key] == null)) {
+                    return;
+                }
                 user[key] = req.body[key];
             }
         });

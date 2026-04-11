@@ -25,46 +25,37 @@ const getProjects = async (req, res, next) => {
             const Job = require('../models/Job');
             const jobFilter = { companyId: req.user.companyId };
 
+            // Visibility via Jobs: PM/Foreman see jobs they guide, Worker sees jobs they are in
+            jobFilter.$or = [
+                { foremanId: req.user._id },
+                { assignedWorkers: req.user._id }
+            ];
             if (req.user.role === 'PM') {
-                jobFilter.$or = [
-                    { foremanId: req.user._id },
-                    { createdBy: req.user._id }
-                ];
-            } else if (req.user.role === 'FOREMAN') {
-                jobFilter.foremanId = req.user._id;
-            } else {
-                jobFilter.assignedWorkers = req.user._id;
+                jobFilter.$or.push({ createdBy: req.user._id });
             }
 
             console.log('GET /api/projects - finding jobs with filter', jobFilter);
             const assignedJobs = await Job.find(jobFilter).select('projectId');
             console.log('GET /api/projects - jobs found', assignedJobs.length);
-            // Ensure we handle cases where projectId might be missing or invalid
+            
             const jobProjectIds = assignedJobs
                 .filter(j => j.projectId)
                 .map(j => j.projectId.toString());
 
-            if (req.user.role === 'PM') {
-                // For PMs, also include projects they are directly assigned to or created
-                console.log('GET /api/projects - finding direct projects for PM');
-                const directProjects = await Project.find({
-                    companyId: req.user.companyId,
-                    $or: [
-                        { pmId: req.user._id },
-                        { createdBy: req.user._id }
-                    ]
-                }).select('_id');
-                const directProjectIds = directProjects.map(p => p._id.toString());
+            // Direct Visibility via Projects: projects they are assigned to lead (pmId) or created
+            console.log('GET /api/projects - finding direct projects');
+            const directProjects = await Project.find({
+                companyId: req.user.companyId,
+                $or: [
+                    { pmId: req.user._id },
+                    { createdBy: req.user._id }
+                ]
+            }).select('_id');
+            const directProjectIds = directProjects.map(p => p._id.toString());
 
-                // Combine and unique
-                const allProjectIds = [...new Set([...jobProjectIds, ...directProjectIds])];
-
-                // If the PM is involved in any project via jobs or direct assignment,
-                // filter the main query by those IDs.
-                query._id = { $in: allProjectIds };
-            } else {
-                query._id = { $in: jobProjectIds };
-            }
+            // Combine and unique
+            const allProjectIds = [...new Set([...jobProjectIds, ...directProjectIds])];
+            query._id = { $in: allProjectIds };
         }
 
         // Clients can only see their own projects

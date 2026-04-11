@@ -120,6 +120,15 @@ const clockIn = async (req, res, next) => {
             );
         }
 
+        // Auto-activate Job when worker clocks in
+        if (jobId) {
+            const Job = require('../models/Job');
+            await Job.findOneAndUpdate(
+                { _id: jobId, status: 'planning' },
+                { $set: { status: 'active' } }
+            );
+        }
+
         // Emit socket event
         const io = req.app.get('io');
         if (io) {
@@ -217,6 +226,15 @@ const clockOut = async (req, res, next) => {
             log.createdByRole = req.user.role;
         }
         await log.save();
+
+        // Auto-set Job to 'on-hold' when worker clocks out (only if it was active)
+        if (log.jobId) {
+            const Job = require('../models/Job');
+            await Job.findOneAndUpdate(
+                { _id: log.jobId, status: 'active' },
+                { $set: { status: 'on-hold' } }
+            );
+        }
 
         // Emit socket event
         const io = req.app.get('io');
