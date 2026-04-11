@@ -8,18 +8,59 @@ const getDrawings = async (req, res, next) => {
     try {
         const query = { companyId: req.user.companyId };
 
-        // Filter projects for clients
-        if (req.user.role === 'CLIENT') {
+        // Role-based visibility logic
+        if (['PM', 'FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(req.user.role)) {
+            const Job = require('../models/Job');
+            const jobFilter = { companyId: req.user.companyId };
+
+            if (req.user.role === 'PM') {
+                jobFilter.$or = [
+                    { foremanId: req.user._id },
+                    { createdBy: req.user._id }
+                ];
+            } else if (['FOREMAN', 'SUBCONTRACTOR'].includes(req.user.role)) {
+                jobFilter.foremanId = req.user._id;
+            } else {
+                jobFilter.assignedWorkers = req.user._id;
+            }
+
+            const assignedJobs = await Job.find(jobFilter).select('projectId');
+            const jobProjectIds = assignedJobs
+                .filter(j => j.projectId)
+                .map(j => j.projectId.toString());
+
+            let finalAllowedProjectIds = jobProjectIds;
+
+            if (req.user.role === 'PM') {
+                const Project = require('../models/Project');
+                const directProjects = await Project.find({
+                    companyId: req.user.companyId,
+                    $or: [
+                        { pmId: req.user._id },
+                        { createdBy: req.user._id }
+                    ]
+                }).select('_id');
+                const directProjectIds = directProjects.map(p => p._id.toString());
+                finalAllowedProjectIds = [...new Set([...jobProjectIds, ...directProjectIds])];
+            }
+
+            query.projectId = { $in: finalAllowedProjectIds };
+
+        } else if (req.user.role === 'CLIENT') {
             const Project = require('../models/Project');
             const clientProjects = await Project.find({ clientId: req.user._id }).select('_id');
-            const projectIds = clientProjects.map(p => p._id);
+            const projectIds = clientProjects.map(p => p._id.toString());
             query.projectId = { $in: projectIds };
         }
 
+        // Apply additional filter if projectId is provided in query params
         if (req.query.projectId) {
-            // If projectId is provided, ensure it's one of the client's projects
-            if (req.user.role === 'CLIENT' && !query.projectId.$in.some(id => id.toString() === req.query.projectId)) {
-                return res.status(403).json({ message: 'Not authorized to access this project drawings' });
+            // Authorization check for restricted roles
+            if (['CLIENT', 'PM', 'FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(req.user.role)) {
+                const allowedIds = query.projectId?.$in || [];
+                if (!allowedIds.includes(req.query.projectId.toString())) {
+                    return res.status(403).json({ message: 'Not authorized to access this project drawings' });
+                }
             }
             query.projectId = req.query.projectId;
         }
@@ -28,6 +69,7 @@ const getDrawings = async (req, res, next) => {
             .populate('projectId', 'name')
             .populate('companyId')
             .sort({ createdAt: -1 });
+
         res.json(drawings);
     } catch (error) {
         next(error);
