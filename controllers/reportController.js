@@ -978,36 +978,55 @@ const getDetailedProjectReport = async (req, res, next) => {
             throw new Error('Project not found');
         }
 
-        const [jobs, projectTasks, projectRFIs] = await Promise.all([
+        const [jobs, projectTasks, projectRFIs, projectIssues, projectDailyLogs] = await Promise.all([
             Job.find({ projectId, companyId }),
             Task.find({ projectId, companyId }).populate('assignedTo', 'fullName role'),
-            RFI.find({ projectId, companyId })
+            RFI.find({ projectId, companyId }),
+            Issue.find({ projectId, companyId }).populate('assignedTo', 'fullName').populate('reportedBy', 'fullName').sort({ createdAt: -1 }),
+            DailyLog.find({ projectId, companyId }).populate('reportedBy', 'fullName').sort({ date: -1 })
         ]);
 
         const detailedJobs = await Promise.all(jobs.map(async (job) => {
-            // Task Section: Fetch JobTasks and their SubTasks
-            const jobTasks = await JobTask.find({ jobId: job._id }).populate('assignedTo', 'fullName role');
-            const subTasks = await SubTask.find({ 
-                taskId: { $in: jobTasks.map(t => t._id) },
+            // Task Section: Fetch JobTasks and their recursive SubTasks
+            const [jobTasks, jobIssues, jobDailyLogs] = await Promise.all([
+                JobTask.find({ jobId: job._id }).populate('assignedTo', 'fullName role'),
+                Issue.find({ jobId: job._id }).populate('assignedTo', 'fullName').populate('reportedBy', 'fullName').sort({ createdAt: -1 }),
+                DailyLog.find({ jobId: job._id }).populate('reportedBy', 'fullName').sort({ date: -1 })
+            ]);
+
+            const jobTaskIds = jobTasks.map(t => t._id);
+            const allSubTasks = await SubTask.find({ 
+                taskId: { $in: jobTaskIds },
                 onModel: 'JobTask'
             }).populate('assignedTo', 'fullName role');
 
-            // Map subtasks to their tasks
-            const taskTree = jobTasks.map(task => {
-                const associatedSubTasks = subTasks.filter(st => {
-                    const tid = st.taskId?._id || st.taskId;
-                    return tid?.toString() === task._id.toString();
+            // Create a recursive tree building function
+            const buildTaskTree = (parentItems, allSubItems, isTopLevel = false) => {
+                return parentItems.map(item => {
+                    const itemId = item._id.toString();
+                    const children = allSubItems.filter(sub => {
+                        if (isTopLevel) {
+                            // Direct children of JobTask should have parentSubTaskId as null
+                            const tid = sub.taskId?._id || sub.taskId;
+                            return tid?.toString() === itemId && !sub.parentSubTaskId;
+                        } else {
+                            // Deeper levels should match parentSubTaskId
+                            const pid = sub.parentSubTaskId?._id || sub.parentSubTaskId;
+                            return pid?.toString() === itemId;
+                        }
+                    });
+
+                    return {
+                        ...item.toObject(),
+                        subtasks: children.length > 0 ? buildTaskTree(children, allSubItems, false) : []
+                    };
                 });
-                
-                return {
-                    ...task.toObject(),
-                    subtasks: associatedSubTasks
-                };
-            });
+            };
+
+            const taskTree = buildTaskTree(jobTasks, allSubTasks, true);
 
             // Workers & Subcontractors Section (TimeLogs)
-            const jobTaskIds = jobTasks.map(t => t._id);
-            const subTaskIds = subTasks.map(s => s._id);
+            const subTaskIds = allSubTasks.map(s => s._id);
             
             const timeLogs = await TimeLog.find({ 
                 $or: [
@@ -1108,6 +1127,23 @@ const getDetailedProjectReport = async (req, res, next) => {
                 totalCost: (workerTotal + subTotal + equipTotal + materialTotal).toFixed(2),
                 progress: job.progress || 0,
                 tasks: taskTree,
+                deficiencies: jobIssues.map(iss => ({
+                    title: iss.title,
+                    description: iss.description,
+                    status: iss.status,
+                    priority: iss.priority,
+                    assignedTo: iss.assignedTo?.fullName || 'Unassigned',
+                    reportedBy: iss.reportedBy?.fullName || 'System',
+                    date: iss.createdAt
+                })),
+                dailyLogs: jobDailyLogs.map(log => ({
+                    date: log.date,
+                    reportedBy: log.reportedBy?.fullName || '---',
+                    weather: log.weather ? `${log.weather.status || '---'}${log.weather.temperature ? `, ${log.weather.temperature}°C` : ''}` : '---',
+                    notes: log.notes || log.workPerformed || '',
+                    crewCount: log.crew?.length || log.manpower?.reduce((acc, m) => acc + (m.count || 0), 0) || 0,
+                    completed: log.completed
+                })),
                 workers: Object.values(workerData).map(w => ({ ...w, totalHours: w.totalHours.toFixed(1), cost: w.cost.toFixed(2) })),
                 subcontractors: Object.values(subcontractorData).map(s => ({ ...s, totalHours: s.totalHours.toFixed(1), cost: s.cost.toFixed(2) })),
                 equipment: equipData,
@@ -1153,7 +1189,23 @@ const getDetailedProjectReport = async (req, res, next) => {
                 pendingTasks: totalTasksGlobal - completedTasksGlobal,
                 totalWorkers: totalWorkersGlobal,
                 totalHours: totalHoursGlobal.toFixed(1),
-                rfis: projectRFIs.length
+                rfis: projectRFIs.length,
+                deficiencies: projectIssues.map(iss => ({
+                    title: iss.title,
+                    status: iss.status,
+                    priority: iss.priority,
+                    date: iss.createdAt,
+                    assignedTo: iss.assignedTo?.fullName || 'Unassigned',
+                    reportedBy: iss.reportedBy?.fullName || 'System'
+                })),
+                recentDailyLogs: projectDailyLogs.slice(0, 15).map(log => ({
+                    date: log.date,
+                    reportTime: log.createdAt,
+                    foreman: log.reportedBy?.fullName || '---',
+                    weather: log.weather ? `${log.weather.status || '---'}${log.weather.temperature ? `, ${log.weather.temperature}°C` : ''}` : '---',
+                    notes: log.notes || log.workPerformed || '',
+                    crewCount: log.crew?.length || log.manpower?.reduce((acc, m) => acc + (m.count || 0), 0) || 0
+                }))
             },
             jobs: detailedJobs
         });
