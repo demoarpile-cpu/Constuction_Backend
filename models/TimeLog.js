@@ -85,6 +85,13 @@ const timeLogSchema = new mongoose.Schema({
     timestamps: true
 });
 
+
+timeLogSchema.index({ companyId: 1 });
+timeLogSchema.index({ userId: 1 });
+timeLogSchema.index({ projectId: 1 });
+timeLogSchema.index({ clockIn: 1 });
+timeLogSchema.index({ companyId: 1, clockIn: -1 });
+
 const TimeLog = mongoose.model('TimeLog', timeLogSchema);
 
 module.exports = TimeLog;

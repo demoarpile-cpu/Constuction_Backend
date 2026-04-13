@@ -220,8 +220,7 @@ const getUsers = async (req, res, next) => {
         }
 
         console.log('getUsers query:', query);
-        const users = await User.find(query).select('-password');
-        console.log('getUsers found count:', users.length);
+        const users = await User.find(query).select('-password').lean();
         res.json(users);
     } catch (error) {
         console.error('getUsers error:', error);

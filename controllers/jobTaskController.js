@@ -307,13 +307,18 @@ const getWorkerTasks = async (req, res) => {
             query.$or.push({ assignedForeman: userId });
         }
 
+        if (req.query.excludeCompleted === 'true') {
+            query.status = { $nin: ['completed', 'cancelled'] };
+        }
+
         const tasks = await JobTask.find(query)
             .populate({
                 path: 'jobId',
                 select: 'name projectId',
                 populate: { path: 'projectId', select: 'name' }
             })
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 })
+            .lean();
         res.json(tasks);
     } catch (err) {
         res.status(500).json({ message: err.message });

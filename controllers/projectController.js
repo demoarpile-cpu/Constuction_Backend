@@ -3,6 +3,7 @@ const Task = require('../models/Task');
 const User = require('../models/User');
 const Company = require('../models/Company');
 const Plan = require('../models/Plan');
+const Job = require('../models/Job');
 
 
 // @desc    Get projects for the company
@@ -10,69 +11,58 @@ const Plan = require('../models/Plan');
 // @access  Private
 const getProjects = async (req, res, next) => {
     try {
-        console.log('GET /api/projects - start', req.user.role);
-        // Multi-tenant check: Filter by companyId
-        const query = { companyId: req.user.companyId };
+        const { role, _id: userId, companyId } = req.user;
+        const query = { companyId };
 
-        // Super Admin can see all projects
-        if (req.user.role === 'SUPER_ADMIN') {
+        if (role === 'SUPER_ADMIN') {
             delete query.companyId;
         }
 
-        // PM / Foreman / Worker Visibility Logic
-        if (['PM', 'FOREMAN', 'WORKER'].includes(req.user.role)) {
-            console.log('GET /api/projects - filtered visibility check');
-            const Job = require('../models/Job');
-            const jobFilter = { companyId: req.user.companyId };
-
-            // Visibility via Jobs: PM/Foreman see jobs they guide, Worker sees jobs they are in
-            jobFilter.$or = [
-                { foremanId: req.user._id },
-                { assignedWorkers: req.user._id }
-            ];
-            if (req.user.role === 'PM') {
-                jobFilter.$or.push({ createdBy: req.user._id });
-            }
-
-            console.log('GET /api/projects - finding jobs with filter', jobFilter);
-            const assignedJobs = await Job.find(jobFilter).select('projectId');
-            console.log('GET /api/projects - jobs found', assignedJobs.length);
+        if (['PM', 'FOREMAN', 'WORKER'].includes(role)) {
             
-            const jobProjectIds = assignedJobs
-                .filter(j => j.projectId)
-                .map(j => j.projectId.toString());
-
-            // Direct Visibility via Projects: projects they are assigned to lead (pmId) or created
-            console.log('GET /api/projects - finding direct projects');
-            const directProjects = await Project.find({
-                companyId: req.user.companyId,
+            const jobFilter = { 
+                companyId,
                 $or: [
-                    { pmId: req.user._id },
-                    { createdBy: req.user._id }
+                    { foremanId: userId },
+                    { assignedWorkers: userId }
                 ]
-            }).select('_id');
-            const directProjectIds = directProjects.map(p => p._id.toString());
+            };
+            if (role === 'PM') jobFilter.$or.push({ createdBy: userId });
 
-            // Combine and unique
-            const allProjectIds = [...new Set([...jobProjectIds, ...directProjectIds])];
+            const [assignedJobs, directProjects] = await Promise.all([
+                Job.find(jobFilter).select('projectId').lean(),
+                Project.find({
+                    companyId,
+                    $or: [
+                        { pmId: userId },
+                        { createdBy: userId }
+                    ]
+                }).select('_id').lean()
+            ]);
+            
+            const allProjectIds = [
+                ...new Set([
+                    ...assignedJobs.filter(j => j.projectId).map(j => j.projectId.toString()),
+                    ...directProjects.map(p => p._id.toString())
+                ])
+            ];
             query._id = { $in: allProjectIds };
         }
 
-        // Clients can only see their own projects
-        if (req.user.role === 'CLIENT') {
-            query.clientId = req.user._id;
+        if (role === 'CLIENT') {
+            query.clientId = userId;
         }
 
-        console.log('GET /api/projects - final query', query);
+        // Optimization: Select only necessary fields for the list view
         const projects = await Project.find(query)
+            .select('name status pmId clientId createdAt budget image currentPhase location siteLatitude siteLongitude')
             .populate('clientId', 'fullName email')
-            .populate('createdBy', 'fullName')
             .populate('pmId', 'fullName email')
-            .sort({ createdAt: -1 });
-        console.log('GET /api/projects - success', projects.length);
+            .sort({ createdAt: -1 })
+            .lean();
+
         res.json(projects);
     } catch (error) {
-        console.error('GET /api/projects - error', error);
         next(error);
     }
 };
@@ -83,9 +73,10 @@ const getProjects = async (req, res, next) => {
 const getProjectById = async (req, res, next) => {
     try {
         const project = await Project.findById(req.params.id)
-            .populate('clientId', 'fullName email')
-            .populate('createdBy', 'fullName')
-            .populate('pmId', 'fullName email');
+            .populate('clientId', 'fullName email avatar')
+            .populate('createdBy', 'fullName avatar')
+            .populate('pmId', 'fullName email avatar')
+            .lean();
 
         if (!project) {
             res.status(404);
@@ -308,10 +299,10 @@ const getClientProgress = async (req, res, next) => {
             return res.status(403).json({ message: 'Not authorized' });
         }
 
-        const jobs = await Job.find({ projectId: project._id });
+        const jobs = await Job.find({ projectId: project._id }).select('_id status').lean();
         const jobIds = jobs.map(j => j._id);
 
-        const tasks = await JobTask.find({ jobId: { $in: jobIds } });
+        const tasks = await JobTask.find({ jobId: { $in: jobIds } }).select('status updatedAt title dueDate').lean();
 
         const totalTasks = tasks.length;
         const completedTasks = tasks.filter(t => t.status === 'completed').length;
@@ -360,7 +351,8 @@ const getProjectClientUpdates = async (req, res, next) => {
 
         const updates = await ProjectUpdate.find(query)
             .sort({ date: -1 })
-            .populate('createdBy', 'fullName');
+            .populate('createdBy', 'fullName')
+            .lean();
 
         res.json(updates);
     } catch (error) {

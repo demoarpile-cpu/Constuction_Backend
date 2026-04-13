@@ -80,6 +80,11 @@ const getTasks = async (req, res, next) => {
             jobTaskQuery.priority = req.query.priority.toLowerCase();
         }
 
+        if (req.query.excludeCompleted === 'true') {
+            query.status = { $nin: ['completed', 'cancelled'] };
+            jobTaskQuery.status = { $nin: ['completed', 'cancelled'] };
+        }
+
         if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
             const [subTaskTaskIds, subTaskJobTaskIds] = await Promise.all([
                 SubTask.find({ assignedTo: userId, companyId, onModel: 'Task' }).distinct('taskId'),
@@ -187,6 +192,11 @@ const getMyTasks = async (req, res, next) => {
             query.status = req.query.status;
             const statusMap = { todo: 'pending', in_progress: 'in_progress', completed: 'completed' };
             if (statusMap[req.query.status]) jobTaskQuery.status = statusMap[req.query.status];
+        }
+
+        if (req.query.excludeCompleted === 'true') {
+            query.status = { $nin: ['completed', 'cancelled'] };
+            jobTaskQuery.status = { $nin: ['completed', 'cancelled'] };
         }
 
         const [tasks, jobTasksData] = await Promise.all([
@@ -996,7 +1006,7 @@ const getSchedule = async (req, res, next) => {
             ];
         }
 
-        const [tasks, jobTasksData, subTasks] = await Promise.all([
+        const [tasks, jobTasksData] = await Promise.all([
             Task.find(query)
                 .select('_id title startDate dueDate status priority assignedTo dependencies position createdAt projectId')
                 .populate('assignedTo', 'fullName')
@@ -1007,11 +1017,14 @@ const getSchedule = async (req, res, next) => {
                 .populate({ path: 'jobId', populate: { path: 'projectId', select: 'name' } })
                 .populate('assignedTo', 'fullName')
                 .sort({ dueDate: 1, createdAt: -1 })
-                .lean(),
-            SubTask.find({ companyId })
-                .populate('assignedTo', 'fullName role')
-                .lean() // Efficient fetch with populated assignees 
+                .lean()
         ]);
+
+        const allTaskIds = [...tasks.map(t => t._id), ...jobTasksData.map(jt => jt._id)];
+        const subTasks = await SubTask.find({ 
+            companyId,
+            taskId: { $in: allTaskIds }
+        }).populate('assignedTo', 'fullName role').lean();
 
         const formatted = tasks.map(t => ({
             id: t._id,
