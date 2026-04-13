@@ -21,7 +21,12 @@ const timeLogSchema = new mongoose.Schema({
     },
     taskId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'JobTask'
+        refPath: 'taskModel'
+    },
+    taskModel: {
+        type: String,
+        enum: ['JobTask', 'Task', 'SubTask'],
+        default: 'JobTask'
     },
     clockIn: {
         type: Date,

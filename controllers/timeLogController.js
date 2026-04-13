@@ -96,6 +96,7 @@ const clockIn = async (req, res, next) => {
             projectId,
             jobId,
             taskId,
+            taskModel: req.body.taskType || 'JobTask',
             clockIn: isManual ? new Date(manualTime) : new Date(),
             gpsIn: { latitude, longitude }, // compatibility
             clockInLatitude: latitude,
@@ -113,11 +114,29 @@ const clockIn = async (req, res, next) => {
 
         // If taskId is provided, update task status to 'in_progress'
         if (taskId) {
-            const JobTask = require('../models/JobTask');
-            await JobTask.findOneAndUpdate(
-                { _id: taskId, status: 'pending' },
-                { $set: { status: 'in_progress' } }
-            );
+            const taskType = req.body.taskType || 'JobTask';
+            let Model;
+            let pendingStatus = 'pending';
+            
+            if (taskType === 'Task') {
+                Model = require('../models/Task');
+                pendingStatus = 'todo';
+            } else if (taskType === 'SubTask') {
+                Model = require('../models/SubTask');
+                pendingStatus = 'todo';
+            } else {
+                Model = require('../models/JobTask');
+                pendingStatus = 'pending';
+            }
+
+            try {
+                await Model.findOneAndUpdate(
+                    { _id: taskId, status: pendingStatus },
+                    { $set: { status: 'in_progress' } }
+                );
+            } catch (err) {
+                console.error(`Error updating assignment status for ${taskType}:`, err);
+            }
         }
 
         // Auto-activate Job when worker clocks in

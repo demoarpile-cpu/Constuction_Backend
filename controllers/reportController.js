@@ -386,9 +386,9 @@ const getDashboardStats = async (req, res, next) => {
             startOfWeek.setDate(today.getDate() - today.getDay());
             startOfWeek.setHours(0,0,0,0);
 
-            const [myLogsToday, activeLog, jobs, userJobTasks, myRecentActivity] = await Promise.all([
+            const [myLogsToday, activeLog, jobs, userJobTasks, globalTasks, userSubTasks, myRecentActivity] = await Promise.all([
                 TimeLog.find({ userId, clockIn: { $gte: today } }).lean(),
-                TimeLog.findOne({ userId, clockOut: null }).populate('projectId', 'name').lean(),
+                TimeLog.findOne({ userId, clockOut: null }).populate('projectId', 'name').populate('taskId', 'title').lean(),
                 Job.find({
                     companyId,
                     $or: [
@@ -404,6 +404,16 @@ const getDashboardStats = async (req, res, next) => {
                     path: 'jobId',
                     select: 'name projectId',
                     populate: { path: 'projectId', select: 'name' }
+                }).lean(),
+                Task.find({
+                    companyId,
+                    assignedTo: userId,
+                    status: { $nin: ['completed', 'cancelled'] }
+                }).populate('projectId', 'name').lean(),
+                SubTask.find({
+                    companyId,
+                    assignedTo: userId,
+                    status: { $nin: ['completed', 'cancelled'] }
                 }).lean(),
                 TimeLog.find({ userId })
                     .sort({ clockIn: -1 })
@@ -445,14 +455,33 @@ const getDashboardStats = async (req, res, next) => {
                     jobId: j._id
                 }));
 
-            const assignedTasks = userJobTasks.map(t => ({
-                _id: t._id,
-                title: t.title,
-                jobName: t.jobId?.name || 'Unknown Job',
-                projectName: t.jobId?.projectId?.name || 'Unknown Project',
-                jobId: t.jobId?._id,
-                projectId: t.jobId?.projectId?._id
-            }));
+            // Build consolidated tasks list
+            const assignedTasks = [
+                ...userJobTasks.map(t => ({
+                    _id: t._id,
+                    title: t.title,
+                    type: 'JobTask',
+                    jobName: t.jobId?.name || 'Unknown Job',
+                    projectName: t.jobId?.projectId?.name || 'Unknown Project',
+                    jobId: t.jobId?._id,
+                    projectId: t.jobId?.projectId?._id
+                })),
+                ...globalTasks.map(t => ({
+                    _id: t._id,
+                    title: t.title,
+                    type: 'Task',
+                    jobName: 'Global',
+                    projectName: t.projectId?.name || 'Global Project',
+                    projectId: t.projectId?._id
+                })),
+                ...userSubTasks.map(t => ({
+                    _id: t._id,
+                    title: t.title,
+                    type: 'SubTask',
+                    jobName: 'Subassignment',
+                    projectName: 'See Parent Task'
+                }))
+            ];
 
             stats.workerMetrics = {
                 myHoursToday: myHoursToday.toFixed(1) + 'h',
