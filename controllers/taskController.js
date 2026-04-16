@@ -122,15 +122,16 @@ const getTasks = async (req, res, next) => {
 
         const [tasks, jobTasksData] = await Promise.all([
             Task.find(query)
+                .select('-statusHistory')
                 .populate('projectId', 'name')
-                .populate('assignedTo', 'fullName email role')
+                .populate('assignedTo', 'fullName role')
                 .populate('createdBy', 'fullName')
                 .populate('assignedBy', 'fullName')
                 .sort({ position: 1, createdAt: -1, dueDate: 1 })
                 .lean(),
             JobTask.find(jobTaskQuery)
                 .populate({ path: 'jobId', populate: { path: 'projectId', select: 'name' } })
-                .populate('assignedTo', 'fullName email role')
+                .populate('assignedTo', 'fullName role')
                 .populate('createdBy', 'fullName')
                 .sort({ createdAt: -1, dueDate: 1 })
                 .lean()
@@ -201,6 +202,7 @@ const getMyTasks = async (req, res, next) => {
 
         const [tasks, jobTasksData] = await Promise.all([
             Task.find(query)
+                .select('-statusHistory')
                 .populate('projectId', 'name')
                 .populate('assignedBy', 'fullName role')
                 .populate('createdBy', 'fullName')
@@ -208,7 +210,7 @@ const getMyTasks = async (req, res, next) => {
                 .lean(),
             JobTask.find(jobTaskQuery)
                 .populate({ path: 'jobId', populate: { path: 'projectId', select: 'name' } })
-                .populate('assignedTo', 'fullName email role')
+                .populate('assignedTo', 'fullName role')
                 .sort({ createdAt: -1, dueDate: 1 })
                 .lean()
         ]);
@@ -267,8 +269,9 @@ const getProjectTasks = async (req, res, next) => {
         }
 
         const tasks = await Task.find(query)
+            .select('-statusHistory')
             .populate('projectId', 'name')
-            .populate('assignedTo', 'fullName email role')
+            .populate('assignedTo', 'fullName role')
             .populate('assignedBy', 'fullName role')
             .populate('createdBy', 'fullName')
             .sort({ position: 1, createdAt: -1, dueDate: 1 })
