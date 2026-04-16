@@ -11,7 +11,7 @@ const mongoose = require('mongoose');
 const getChatRooms = async (req, res, next) => {
     try {
         const { _id, role } = req.user;
-
+        console.time(`getChatRooms-${_id}`);
         // Fetch rooms where user is a participant
         const participants = await ChatParticipant.find({ userId: _id })
             .populate({
@@ -22,6 +22,47 @@ const getChatRooms = async (req, res, next) => {
                 }
             });
 
+        // Optimization: Get ALL unread counts in one aggregation
+        const roomIds = participants.map(p => p.roomId?._id).filter(id => id);
+        const unreadCounts = await Chat.aggregate([
+            {
+                $match: {
+                    roomId: { $in: roomIds },
+                    sender: { $ne: _id }
+                }
+            },
+            {
+                $group: {
+                    _id: "$roomId",
+                    count: { $sum: 1 },
+                    // This is slightly tricky because lastReadAt is per-participant, not per-room.
+                    // However, we can use a more precise match in the $match stage above with $or if needed.
+                }
+            }
+        ]);
+        
+        // Revised single-query unread counts to respect individual lastReadAt
+        const preciseUnread = await Chat.aggregate([
+            {
+                $match: {
+                    sender: { $ne: _id },
+                    $or: participants.filter(p => p.roomId).map(p => ({
+                        roomId: p.roomId._id,
+                        createdAt: { $gt: p.lastReadAt || new Date(0) }
+                    }))
+                }
+            },
+            {
+                $group: {
+                    _id: "$roomId",
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        const unreadMap = {};
+        preciseUnread.forEach(u => { unreadMap[u._id.toString()] = u.count; });
+
         const rooms = await Promise.all(participants.map(async (p) => {
             const room = p.roomId;
             if (!room) return null;
@@ -29,14 +70,10 @@ const getChatRooms = async (req, res, next) => {
             // Get last message for preview
             const lastMessage = await Chat.findOne({ roomId: room._id })
                 .sort({ createdAt: -1 })
-                .populate('sender', 'fullName');
+                .populate('sender', 'fullName')
+                .lean();
 
-            // Count unread messages
-            const unreadCount = await Chat.countDocuments({
-                roomId: room._id,
-                createdAt: { $gt: p.lastReadAt },
-                sender: { $ne: _id }
-            });
+            const unreadCount = unreadMap[room._id.toString()] || 0;
 
             // For Direct messages, get the other user's name
             let roomName = room.name || 'Chat Room';
@@ -46,14 +83,14 @@ const getChatRooms = async (req, res, next) => {
             let hasClient = false;
             let hasSub = false;
 
-            const allRoomParticipants = await ChatParticipant.find({ roomId: room._id });
+            const allRoomParticipants = await ChatParticipant.find({ roomId: room._id }).lean();
 
             if (room.roomType === 'DIRECT') {
                 const currentUserIdStr = _id.toString();
                 const other = allRoomParticipants.find(p => p.userId.toString() !== currentUserIdStr);
 
                 if (other) {
-                    const otherUser = await User.findById(other.userId).select('fullName role avatar');
+                    const otherUser = await User.findById(other.userId).select('fullName role avatar').lean();
                     if (otherUser) {
                         roomName = otherUser.fullName;
                         avatar = otherUser.avatar;
@@ -62,7 +99,6 @@ const getChatRooms = async (req, res, next) => {
                     }
                 }
             } else {
-                // Check if group/project has client or sub
                 hasClient = allRoomParticipants.some(p => p.roleAtJoining === 'CLIENT');
                 hasSub = allRoomParticipants.some(p => p.roleAtJoining === 'SUBCONTRACTOR');
             }
@@ -87,6 +123,8 @@ const getChatRooms = async (req, res, next) => {
                 avatar
             };
         }));
+
+        console.timeEnd(`getChatRooms-${_id}`);
 
         const sortedRooms = rooms
             .filter(r => r !== null)
@@ -194,18 +232,24 @@ const sendMessage = async (req, res, next) => {
 const getUnreadCount = async (req, res, next) => {
     try {
         const { _id } = req.user;
+        console.time(`unreadCount-${_id}`);
         const participants = await ChatParticipant.find({ userId: _id });
-
         let totalUnread = 0;
-        for (const p of participants) {
+
+        if (participants.length > 0) {
+            const roomIds = participants.map(p => p.roomId);
             const count = await Chat.countDocuments({
-                roomId: p.roomId,
-                createdAt: { $gt: p.lastReadAt },
-                sender: { $ne: _id }
+                roomId: { $in: roomIds },
+                sender: { $ne: _id },
+                $or: participants.map(p => ({
+                    roomId: p.roomId,
+                    createdAt: { $gt: p.lastReadAt || new Date(0) }
+                }))
             });
-            totalUnread += count;
+            totalUnread = count;
         }
 
+        console.timeEnd(`unreadCount-${_id}`);
         res.json({ count: totalUnread });
     } catch (error) {
         next(error);
@@ -367,7 +411,7 @@ const getChatUsers = async (req, res, next) => {
             _id: { $ne: _id },
             isActive: true,
             ...roleFilter
-        }).select('fullName role avatar email');
+        }).select('fullName role email').lean();
 
         res.json(users);
     } catch (error) {

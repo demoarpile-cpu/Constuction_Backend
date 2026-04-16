@@ -111,10 +111,10 @@ const getCompanyReport = async (req, res, next) => {
         // Tasks counts
         const totalTasksCount = await Task.countDocuments({ companyId });
         const completedTasksCount = await Task.countDocuments({ companyId, status: 'completed' });
-        const overdueTasksCount = await Task.countDocuments({ 
-            companyId, 
-            status: { $ne: 'completed' }, 
-            dueDate: { $lt: new Date() } 
+        const overdueTasksCount = await Task.countDocuments({
+            companyId,
+            status: { $ne: 'completed' },
+            dueDate: { $lt: new Date() }
         });
 
         // Weekly Productivity (Last 7 days)
@@ -190,9 +190,9 @@ const getCompanyReport = async (req, res, next) => {
             status: { $ne: 'completed' },
             dueDate: { $lt: new Date() }
         })
-        .sort({ dueDate: 1 })
-        .limit(10)
-        .populate('projectId', 'name');
+            .sort({ dueDate: 1 })
+            .limit(10)
+            .populate('projectId', 'name');
 
         res.json({
             financials: {
@@ -310,7 +310,7 @@ const getDashboardStats = async (req, res, next) => {
                 ]),
                 PurchaseOrder.countDocuments(pendingPOFilter),
                 TimeLog.countDocuments({ ...timeLogFilter, status: 'pending' }),
-                TimeLog.find(timeLogFilter).sort({ clockIn: -1 }).limit(5).populate('userId', 'fullName avatar').populate('projectId', 'name').lean(),
+                TimeLog.find(timeLogFilter).sort({ clockIn: -1 }).limit(5).populate('userId', 'fullName').populate('projectId', 'name').lean(),
                 DailyLog.find(dailyLogFilter).sort({ date: -1 }).limit(3).populate('reportedBy', 'fullName').populate('projectId', 'name').lean(),
                 Equipment.aggregate([
                     { $match: { companyId: new mongoose.Types.ObjectId(companyId) } },
@@ -384,7 +384,7 @@ const getDashboardStats = async (req, res, next) => {
         if (['WORKER', 'SUBCONTRACTOR', 'FOREMAN'].includes(role)) {
             const startOfWeek = new Date();
             startOfWeek.setDate(today.getDate() - today.getDay());
-            startOfWeek.setHours(0,0,0,0);
+            startOfWeek.setHours(0, 0, 0, 0);
 
             const [myLogsToday, activeLog, jobs, userJobTasks, globalTasks, userSubTasks, myRecentActivity] = await Promise.all([
                 TimeLog.find({ userId, clockIn: { $gte: today } }).lean(),
@@ -559,7 +559,7 @@ const getDashboardStats = async (req, res, next) => {
             productivity.push({
                 day: daysShort[d.getDay()],
                 hours: Math.round(dayData?.totalHours || 0),
-                date: new Date(d).setHours(0,0,0,0)
+                date: new Date(d).setHours(0, 0, 0, 0)
             });
         }
         stats.trendData = productivity;
@@ -1093,7 +1093,7 @@ const getDetailedProjectReport = async (req, res, next) => {
             ]);
 
             const jobTaskIds = jobTasks.map(t => t._id);
-            const allSubTasks = await SubTask.find({ 
+            const allSubTasks = await SubTask.find({
                 taskId: { $in: jobTaskIds },
                 onModel: 'JobTask'
             }).populate('assignedTo', 'fullName role');
@@ -1125,14 +1125,14 @@ const getDetailedProjectReport = async (req, res, next) => {
 
             // Workers & Subcontractors Section (TimeLogs)
             const subTaskIds = allSubTasks.map(s => s._id);
-            
-            const timeLogs = await TimeLog.find({ 
+
+            const timeLogs = await TimeLog.find({
                 $or: [
                     { jobId: job._id },
                     { taskId: { $in: [...jobTaskIds, ...subTaskIds] } }
                 ]
             }).populate('userId', 'fullName role hourlyRate');
-            
+
             const workerData = {};
             const subcontractorData = {};
 
@@ -1141,15 +1141,15 @@ const getDetailedProjectReport = async (req, res, next) => {
                 const end = log.clockOut || new Date();
                 const hours = (new Date(end) - new Date(log.clockIn)) / (1000 * 60 * 60);
                 const cost = hours * (log.userId.hourlyRate || 0);
-                
+
                 const target = log.userId.role === 'SUBCONTRACTOR' ? subcontractorData : workerData;
                 const uid = log.userId._id.toString();
 
                 if (!target[uid]) {
-                    target[uid] = { 
-                        name: log.userId.fullName, 
-                        role: log.userId.role, 
-                        totalHours: 0, 
+                    target[uid] = {
+                        name: log.userId.fullName,
+                        role: log.userId.role,
+                        totalHours: 0,
                         cost: 0,
                         work: log.userId.role === 'SUBCONTRACTOR' ? 'Contracted Services' : 'Labour'
                     };
@@ -1159,30 +1159,30 @@ const getDetailedProjectReport = async (req, res, next) => {
             });
 
             // Equipment Section
-            const equipments = await Equipment.find({ 
+            const equipments = await Equipment.find({
                 companyId,
                 $or: [
                     { assignedJob: job._id },
                     { 'assignmentHistory.jobId': job._id }
                 ]
             });
-            
+
             const equipData = equipments.map(e => {
                 const relevantHistory = e.assignmentHistory.filter(h => h.jobId?.toString() === job._id.toString());
-                
+
                 let currentHours = 0;
                 if (e.assignedJob?.toString() === job._id.toString() && e.assignedDate) {
                     const end = e.returnedDate || new Date();
                     currentHours = Math.max(0, (new Date(end) - new Date(e.assignedDate)) / (1000 * 60 * 60));
                 }
-                
+
                 const historyHours = relevantHistory.reduce((acc, h) => {
                     const start = h.assignedDate || h.clockIn;
                     const end = h.returnedDate || h.clockOut || new Date();
                     if (!start) return acc;
                     return acc + Math.max(0, (new Date(end) - new Date(start)) / (1000 * 60 * 60));
                 }, 0);
-                
+
                 const totalHours = historyHours + currentHours;
                 return {
                     name: e.name || 'Unknown Equipment',
@@ -1270,7 +1270,7 @@ const getDetailedProjectReport = async (req, res, next) => {
             const subHrs = j.subcontractors.reduce((sacc, s) => sacc + parseFloat(s.totalHours), 0);
             return acc + workerHrs + subHrs;
         }, 0);
-        
+
         const totalWorkersGlobal = new Set(detailedJobs.flatMap(j => j.workers.map(w => w.name))).size;
 
         res.json({
@@ -1279,7 +1279,7 @@ const getDetailedProjectReport = async (req, res, next) => {
                 name: project.name,
                 budget: project.budget || 0,
                 totalCost: totalCostGlobal.toFixed(2),
-                remainingBudget: ( (project.budget || 0) - totalCostGlobal).toFixed(2),
+                remainingBudget: ((project.budget || 0) - totalCostGlobal).toFixed(2),
                 budgetUsedPercent: project.budget > 0 ? ((totalCostGlobal / project.budget) * 100).toFixed(1) : 0,
                 totalJobs: detailedJobs.length,
                 totalTasks: totalTasksGlobal,
@@ -1316,59 +1316,63 @@ const getDetailedProjectReport = async (req, res, next) => {
 const getSidebarMetrics = async (req, res, next) => {
     try {
         const { companyId, _id: userId, role } = req.user;
+        console.time(`sidebarMetrics-${userId}`);
 
-        // 1. Unread Notifications & Issues & Projects
-        const [notifCount, issueCount, projects] = await Promise.all([
+        // 1. Core counters & Projects
+        const [notifCount, issueCount, projects, participants] = await Promise.all([
             Notification.countDocuments({ companyId, userId, isRead: false }),
-            Issue.countDocuments({ 
-                companyId, 
-                status: { $in: ['open', 'in_progress', 'in_review'] } 
+            Issue.countDocuments({
+                companyId,
+                status: { $in: ['open', 'in_progress', 'in_review'] }
             }),
-            Project.find({ 
-                companyId, 
-                status: { $in: ['active', 'planning'] } 
-            }).select('name status').lean()
+            Project.find({
+                companyId,
+                status: { $in: ['active', 'planning'] }
+            }).select('name status').lean(),
+            ChatParticipant.find({ userId }).select('roomId lastReadAt').lean()
         ]);
 
-        // 2. Unread Chat Count (Parallel optimization)
-        const participants = await ChatParticipant.find({ userId }).select('roomId lastReadAt').lean();
+        // 2. Optimized Unread Chat Count (Single Aggregation)
         let chatUnreadCount = 0;
         if (participants.length > 0) {
-            const chatCounts = await Promise.all(participants.map(p => 
-                Chat.countDocuments({
-                    roomId: p.roomId,
-                    createdAt: { $gt: p.lastReadAt || new Date(0) },
-                    sender: { $ne: userId }
-                })
-            ));
-            chatUnreadCount = chatCounts.reduce((sum, c) => sum + c, 0);
-        }
-
-        // 3. Task Count (Efficiently get total count without fetching full schedule)
-        // For Admin/Owner, get all active. For others, get assigned.
-        let taskQuery = { companyId, status: { $nin: ['completed', 'cancelled'] } };
-        let stats_taskCount = 0;
-        if (['WORKER', 'SUBCONTRACTOR', 'FOREMAN'].includes(role)) {
-            taskQuery.$or = [
-                { assignedTo: userId },
-                { createdBy: userId }
-            ];
-            // Also include counts from JobTask
-            const jobTaskCount = await JobTask.countDocuments({
-                companyId,
-                status: { $nin: ['completed', 'cancelled'] },
-                $or: [{ assignedTo: userId }, { assignedForeman: userId }]
+            const roomIds = participants.map(p => p.roomId);
+            const lastReadMap = {};
+            participants.forEach(p => {
+                lastReadMap[p.roomId.toString()] = p.lastReadAt || new Date(0);
             });
-            const mainTaskCount = await Task.countDocuments(taskQuery);
-            stats_taskCount = mainTaskCount + jobTaskCount;
-        } else {
-            const [mainCount, jobCount] = await Promise.all([
-                Task.countDocuments(taskQuery),
-                JobTask.countDocuments({ companyId, status: { $nin: ['completed', 'cancelled'] } })
-            ]);
-            stats_taskCount = mainCount + jobCount;
+
+            // Using aggregation to group by room if needed, or just sum overall unread
+            // To be precise with individual lastReadAt per room, we can use a more complex aggregation or filter in memory if result set is small
+            // But usually, a single count with $or for different room/date matches is faster than many separate queries
+            const unreadAgg = await Chat.countDocuments({
+                roomId: { $in: roomIds },
+                sender: { $ne: userId },
+                $or: participants.map(p => ({
+                    roomId: p.roomId,
+                    createdAt: { $gt: p.lastReadAt || new Date(0) }
+                }))
+            });
+            chatUnreadCount = unreadAgg;
         }
 
+        // 3. Optimized Task Count
+        const taskQuery = { companyId, status: { $nin: ['completed', 'cancelled'] } };
+        if (['WORKER', 'SUBCONTRACTOR', 'FOREMAN'].includes(role)) {
+            taskQuery.$or = [{ assignedTo: userId }, { createdBy: userId }];
+        }
+
+        const [mainCount, jobCount] = await Promise.all([
+            Task.countDocuments(taskQuery),
+            JobTask.countDocuments({ 
+                companyId, 
+                status: { $nin: ['completed', 'cancelled'] },
+                ...( ['WORKER', 'SUBCONTRACTOR', 'FOREMAN'].includes(role) ? { $or: [{ assignedTo: userId }, { assignedForeman: userId }] } : {} )
+            })
+        ]);
+
+        const stats_taskCount = mainCount + jobCount;
+
+        console.timeEnd(`sidebarMetrics-${userId}`);
         res.json({
             taskCount: stats_taskCount,
             issueCount,

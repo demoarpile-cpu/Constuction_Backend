@@ -74,6 +74,10 @@ const purchaseOrderSchema = new mongoose.Schema({
     timestamps: true
 });
 
+purchaseOrderSchema.index({ companyId: 1, projectId: 1 });
+purchaseOrderSchema.index({ companyId: 1, status: 1 });
+purchaseOrderSchema.index({ vendorId: 1 });
+
 // Middleware to calculate item totals before saving
 purchaseOrderSchema.pre('validate', function (next) {
     if (this.items && this.items.length > 0) {
