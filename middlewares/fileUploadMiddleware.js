@@ -1,49 +1,36 @@
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const { cloudinary } = require('../utils/cloudinaryConfig');
 
-// Ensure uploads directory exists
-const uploadDir = 'uploads/general';
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: async (req, file) => {
+        let folder = 'construction-saas/general';
+        if (req.baseUrl.includes('drawings')) folder = 'construction-saas/drawings';
+        else if (req.baseUrl.includes('rfis')) folder = 'construction-saas/rfis';
+        else if (req.baseUrl.includes('vendors')) folder = 'construction-saas/vendors';
+        else if (req.baseUrl.includes('invoices')) folder = 'construction-saas/invoices';
+        else if (req.baseUrl.includes('equipment')) folder = 'construction-saas/equipment';
 
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        // Determine subfolder based on route
-        let folder = 'general';
-        if (req.baseUrl.includes('drawings')) folder = 'drawings';
-        else if (req.baseUrl.includes('rfis')) folder = 'drawings'; // RFIs often attach drawings
-        else if (req.baseUrl.includes('vendors')) folder = 'drawings';
+        const mimetype = file.mimetype || '';
+        // Force PDF to be 'raw' to avoid 401 image authorization issues
+        const isRaw = !['image/jpeg', 'image/png', 'image/gif'].includes(mimetype);
         
-        const uploadPath = path.join('uploads', folder);
-        
-        // Ensure directory exists
-        if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-        }
-        
-        cb(null, uploadPath);
+        let resourceType = isRaw ? 'raw' : 'auto';
+
+        const params = {
+            folder: folder,
+            resource_type: resourceType,
+            type: 'upload', // Explicitly public
+            public_id: file.fieldname + '-' + Date.now(),
+            access_mode: 'public'
+        };
+        return params;
     },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-    }
 });
-
-const fileFilter = (req, file, cb) => {
-    const allowedExtensions = ['.pdf', '.dwg', '.dxf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.xls', '.xlsx'];
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (allowedExtensions.includes(ext)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Invalid file type! Allowed: PDF, DWG, DXF, JPG, PNG, DOC, DOCX, XLS'), false);
-    }
-};
 
 const upload = multer({
     storage: storage,
-    fileFilter: fileFilter,
     limits: {
         fileSize: 50 * 1024 * 1024 // 50MB limit
     }
