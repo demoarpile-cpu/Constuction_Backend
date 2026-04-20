@@ -10,8 +10,7 @@ const {
     getClientProgress,
     getProjectClientUpdates,
     createProjectClientUpdate,
-    getProjectFinancialSummary,
-    getProjectImage
+    getProjectFinancialSummary
 } = require('../controllers/projectController');
 const { protect, authorize } = require('../middlewares/authMiddleware');
 const { checkProjectLimit } = require('../middlewares/checkPlanLimits');
@@ -21,7 +20,6 @@ router.use(protect); // All routes protected
 
 router.get('/', getProjects);
 router.get('/:id', getProjectById);
-router.get('/:id/image', getProjectImage);
 router.get('/:id/members', getProjectMembers);
 router.post('/', authorize('SUPER_ADMIN', 'COMPANY_OWNER'), checkProjectLimit, createProject);
 router.post('/:id/assign-pm', authorize('SUPER_ADMIN', 'COMPANY_OWNER'), updateProject); // Reuse updateProject for now or create specific controller

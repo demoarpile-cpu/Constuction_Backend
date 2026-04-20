@@ -29,37 +29,41 @@ const getJobs = async (req, res) => {
 
         // Role-based visibility
         if (role === 'PM') {
-            const projectIds = await Project.distinct('_id', {
+            const managedProjects = await Project.find({
                 companyId,
                 $or: [{ pmId: userId }, { createdBy: userId }]
-            });
+            }).select('_id').lean();
             
+            const projectIds = managedProjects.map(p => p._id);
             filter.$or = [
                 { projectId: { $in: projectIds } },
                 { createdBy: userId },
                 { foremanId: userId }
             ];
-        } else if (['FOREMAN', 'WORKER'].includes(role)) {
+        } else if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
             const JobTask = require('../models/JobTask');
-            const taskJobIds = await JobTask.distinct('jobId', {
+            const userTasks = await JobTask.find({
                 $or: [{ assignedTo: userId }, { assignedForeman: userId }]
-            });
+            }).select('jobId').lean();
             
+            const taskJobIds = userTasks.map(t => t.jobId);
             filter.$or = [
                 { foremanId: userId },
-                { assignedWorkers: userId }, 
+                { assignedWorkers: userId }, // Mongo simplifies array $in automatically
                 { _id: { $in: taskJobIds } }
             ];
         }
 
-        console.time(`getJobs-${userId}`);
         const jobs = await Job.find(filter)
-            .populate('foremanId', 'fullName role')
-            .populate('projectId', 'name') 
+            .populate('foremanId', 'fullName role avatar')
+            .populate('assignedWorkers', 'fullName role avatar')
+            .populate({
+                path: 'projectId',
+                select: 'name pmId',
+                populate: { path: 'pmId', select: 'fullName avatar' }
+            })
             .sort({ createdAt: -1 })
             .lean();
-        
-        console.timeEnd(`getJobs-${userId}`);
             
         res.json(jobs);
     } catch (err) {
@@ -77,8 +81,7 @@ const getJobById = async (req, res) => {
                 path: 'projectId',
                 select: 'name pmId',
                 populate: { path: 'pmId', select: 'fullName' }
-            })
-            .lean();
+            });
         if (!job) return res.status(404).json({ message: 'Job not found' });
         res.json(job);
     } catch (err) {
