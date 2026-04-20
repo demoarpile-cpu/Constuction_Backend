@@ -6,7 +6,6 @@ const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const JobTask = require('../models/JobTask');
 const Todo = require('../models/Todo');
-const mongoose = require('mongoose');
 const { dispatchNotification } = require('../utils/notificationHelper');
 
 // Helper: Validate if assigner can assign to given assignees based on role hierarchy
