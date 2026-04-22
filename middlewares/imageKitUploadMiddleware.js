@@ -11,12 +11,16 @@ const imagekit = new ImageKit({
 const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-    const allowedExtensions = ['.pdf', '.dwg', '.dxf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.xls', '.xlsx'];
+    const allowedExtensions = [
+        '.pdf', '.dwg', '.dxf', '.jpg', '.jpeg', '.png', '.gif', 
+        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', 
+        '.txt', '.csv', '.zip', '.rar', '.7z'
+    ];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowedExtensions.includes(ext)) {
         cb(null, true);
     } else {
-        cb(new Error('Invalid file type! Allowed: PDF, DWG, DXF, JPG, PNG, DOC, DOCX, XLS'), false);
+        cb(new Error(`Invalid file type! Allowed: ${allowedExtensions.join(', ')}`), false);
     }
 };
 
@@ -40,6 +44,7 @@ const imageKitUpload = async (req, res, next) => {
         if (req.baseUrl.includes('drawings')) folder = '/drawings';
         else if (req.baseUrl.includes('vendors')) folder = '/trades';
         else if (req.baseUrl.includes('rfis')) folder = '/rfis';
+        else if (req.baseUrl.includes('chat')) folder = '/chat';
 
         const uploadPromises = files.map(async (file) => {
             const uploadResponse = await imagekit.upload({
