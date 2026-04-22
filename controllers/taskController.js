@@ -5,6 +5,7 @@ const Job = require('../models/Job');
 const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
 const JobTask = require('../models/JobTask');
+const Todo = require('../models/Todo');
 const { dispatchNotification } = require('../utils/notificationHelper');
 
 // Helper: Validate if assigner can assign to given assignees based on role hierarchy
@@ -146,16 +147,15 @@ const getTasks = async (req, res, next) => {
 
         const [tasks, jobTasksData] = await Promise.all([
             Task.find(query)
-                .select('-statusHistory')
                 .populate('projectId', 'name')
-                .populate('assignedTo', 'fullName role')
+                .populate('assignedTo', 'fullName email role')
                 .populate('createdBy', 'fullName')
                 .populate('assignedBy', 'fullName')
                 .sort({ position: 1, createdAt: -1, dueDate: 1 })
                 .lean(),
             JobTask.find(jobTaskQuery)
                 .populate({ path: 'jobId', populate: { path: 'projectId', select: 'name' } })
-                .populate('assignedTo', 'fullName role')
+                .populate('assignedTo', 'fullName email role')
                 .populate('createdBy', 'fullName')
                 .sort({ createdAt: -1, dueDate: 1 })
                 .lean()
@@ -262,7 +262,6 @@ const getMyTasks = async (req, res, next) => {
 
         const [tasks, jobTasksData] = await Promise.all([
             Task.find(query)
-                .select('-statusHistory')
                 .populate('projectId', 'name')
                 .populate('assignedBy', 'fullName role')
                 .populate('createdBy', 'fullName')
@@ -270,7 +269,7 @@ const getMyTasks = async (req, res, next) => {
                 .lean(),
             JobTask.find(jobTaskQuery)
                 .populate({ path: 'jobId', populate: { path: 'projectId', select: 'name' } })
-                .populate('assignedTo', 'fullName role')
+                .populate('assignedTo', 'fullName email role')
                 .sort({ createdAt: -1, dueDate: 1 })
                 .lean()
         ]);
@@ -491,6 +490,10 @@ const createTask = async (req, res, next) => {
 
         res.status(201).json(populated);
     } catch (error) {
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({ message: 'Validation Failed', errors: messages });
+        }
         next(error);
     }
 };
@@ -566,52 +569,79 @@ const assignTask = async (req, res, next) => {
     }
 };
 
-// @desc    Update task (status, title, etc.)
+// @desc    Update task status/details (Polymorphic: handles Task, JobTask, SubTask, Todo)
 // @route   PATCH /api/tasks/:id
 // @access  Private
 const updateTask = async (req, res, next) => {
     try {
-        const task = await Task.findOne({ _id: req.params.id, companyId: req.user.companyId });
-        if (!task) {
-            res.status(404);
-            throw new Error('Task not found');
+        const { id } = req.params;
+        const companyId = req.user.companyId;
+        const Todo = require('../models/Todo');
+
+        console.log(`[updateTask] Received update for ${id} in company ${companyId}`);
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid task ID format' });
         }
+
+        // --- POLY-LOOKUP SEQUENCE ---
+        // We use findOne with companyId for strict multi-tenancy security
+        let task = await Task.findOne({ _id: id, companyId });
+        let modelType = 'Task';
+
+        if (!task) {
+            task = await JobTask.findOne({ _id: id, companyId });
+            modelType = 'JobTask';
+        }
+
+        if (!task) {
+            task = await SubTask.findOne({ _id: id, companyId });
+            modelType = 'SubTask';
+        }
+
+        if (!task) {
+            task = await Todo.findOne({ _id: id, companyId });
+            modelType = 'Todo';
+        }
+
+        if (!task) {
+            console.warn(`[updateTask] Resource NOT FOUND in any collection for ID: ${id}`);
+            return res.status(404).json({ message: 'Task, SubTask or Todo not found' });
+        }
+
+        console.log(`[updateTask] Found ${modelType} for update: ${task.title || 'Untitled'}`);
 
         const { role, _id: userId } = req.user;
-        const isAdmin = ['SUPER_ADMIN', 'COMPANY_OWNER', 'PM'].includes(role);
-        const isForeman = role === 'FOREMAN';
-        const isAssigned = task.assignedTo.some(id => id.toString() === userId.toString());
+        const isAdmin = ['SUPER_ADMIN', 'COMPANY_OWNER', 'PM', 'ADMIN'].includes(role);
+        
+        // Authorization Logic
+        let isAssigned = false;
+        if (modelType === 'Task') {
+            isAssigned = Array.isArray(task.assignedTo) && task.assignedTo.some(uid => uid.toString() === userId.toString());
+        } else if (modelType === 'SubTask') {
+            isAssigned = task.assignedTo?.toString() === userId.toString();
+        } else if (modelType === 'JobTask') {
+            isAssigned = task.assignedTo?.toString() === userId.toString();
+        } else if (modelType === 'Todo') {
+            isAssigned = task.userId?.toString() === userId.toString();
+        }
 
-        // Workers/Subcontractors can only update status of their own tasks — not reassign
-        if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
-            if (!isAssigned) {
-                res.status(403);
-                throw new Error('You can only update tasks assigned to you');
+        if (['WORKER', 'SUBCONTRACTOR'].includes(role) && !isAssigned && !isAdmin) {
+            return res.status(403).json({ message: 'Not authorized to update this resource' });
+        }
+
+        // --- Model Specific Normalization ---
+        if (modelType === 'JobTask') {
+            if (req.body.status === 'todo') req.body.status = 'pending';
+            if (req.body.priority) req.body.priority = req.body.priority.toLowerCase();
+        } else if (modelType === 'Task' || modelType === 'SubTask') {
+            if (req.body.status === 'pending') req.body.status = 'todo';
+            if (req.body.priority) {
+                req.body.priority = req.body.priority.charAt(0).toUpperCase() + req.body.priority.slice(1).toLowerCase();
             }
-            // Strip reassignment fields
-            delete req.body.assignedTo;
-            delete req.body.assignedBy;
-            delete req.body.assignedRoleType;
         }
 
-        // Foreman cannot modify tasks owned by admin
-        if (isForeman && !isAssigned && !isAdmin) {
-            delete req.body.assignedTo;
-        }
-
-        // OTP check if completing
-        if (req.body.status === 'completed' && task.completionOTP) {
-            if (req.body.otp !== task.completionOTP) {
-                res.status(400);
-                throw new Error('Invalid Completion OTP');
-            }
-        }
-
-        // Track status change
-        if (req.body.status && req.body.status !== task.status) {
-            task.statusHistory.push({ status: req.body.status, changedBy: userId });
-        }
-
+        const oldStatus = task.status;
         const oldStartDate = task.startDate;
         const oldDueDate = task.dueDate;
 
@@ -626,71 +656,85 @@ const updateTask = async (req, res, next) => {
 
         await task.save();
 
-        // Auto-shift logic
-        if ((req.body.startDate && String(oldStartDate) !== String(task.startDate)) || 
-            (req.body.dueDate && String(oldDueDate) !== String(task.dueDate))) {
-            
-            const shiftDependencies = async (currentTaskId, newStartDate, newDueDate) => {
-                if (!newStartDate || !newDueDate) return;
+        // --- Post-Update Logic ---
+        if (modelType === 'JobTask') {
+            const { updateJobProgress } = require('./jobTaskController');
+            await updateJobProgress(task.jobId);
+        } else if (modelType === 'SubTask') {
+            // Recalculate parent progress if subtask status changed
+            if (req.body.status && req.body.status !== oldStatus) {
+                if (task.parentSubTaskId) await recalcSubTaskProgress(task.parentSubTaskId);
                 
-                const deps = await Task.find({ dependencies: currentTaskId, companyId: req.user.companyId });
-                for (const dep of deps) {
-                    if (!dep.startDate || !dep.dueDate) continue;
-                    
-                    const depDuration = new Date(dep.dueDate) - new Date(dep.startDate);
-                    
-                    const shiftedStart = new Date(newDueDate);
-                    shiftedStart.setDate(shiftedStart.getDate() + 1);
-                    
-                    const shiftedDue = new Date(shiftedStart.getTime() + depDuration);
-                    
-                    dep.startDate = shiftedStart;
-                    dep.dueDate = shiftedDue;
-                    
-                    await dep.save();
-                    await shiftDependencies(dep._id, dep.startDate, dep.dueDate);
+                // Also update main task/jobtask if applicable
+                const { taskId, onModel } = task;
+                if (taskId) {
+                    const children = await SubTask.find({ taskId, companyId });
+                    const completed = children.filter(c => c.status === 'completed').length;
+                    const progress = Math.round((completed / children.length) * 100);
+                    const ParentModel = onModel === 'JobTask' ? JobTask : Task;
+                    await ParentModel.findByIdAndUpdate(taskId, { progress });
+                    if (onModel === 'JobTask') {
+                        const jt = await JobTask.findById(taskId);
+                        const { updateJobProgress } = require('./jobTaskController');
+                        await updateJobProgress(jt.jobId);
+                    }
                 }
-            };
-            
-            await shiftDependencies(task._id, task.startDate, task.dueDate);
-        }
-
-        // Sync Chat Participants if assignedTo changed
-        if (req.body.assignedTo) {
-            try {
-                const { syncProjectParticipants } = require('./chatController');
-                await syncProjectParticipants(task.projectId);
-            } catch (syncError) {
-                console.error('Task Update: Failed to sync chat participants:', syncError);
             }
+        } else if (modelType === 'Task') {
+             // Dependency shift logic
+             if ((req.body.startDate && String(oldStartDate) !== String(task.startDate)) || 
+                 (req.body.dueDate && String(oldDueDate) !== String(task.dueDate))) {
+                 const shiftDependencies = async (currId, newStart, newDue) => {
+                     const deps = await Task.find({ dependencies: currId, companyId });
+                     for (const dep of deps) {
+                         if (!dep.startDate || !dep.dueDate) continue;
+                         const dur = new Date(dep.dueDate) - new Date(dep.startDate);
+                         const s = new Date(newDue); s.setDate(s.getDate() + 1);
+                         const d = new Date(s.getTime() + dur);
+                         dep.startDate = s; dep.dueDate = d;
+                         await dep.save();
+                         await shiftDependencies(dep._id, s, d);
+                     }
+                 };
+                 await shiftDependencies(task._id, task.startDate, task.dueDate);
+             }
         }
 
-        await AuditLog.create({
-            userId: req.user._id,
-            action: 'TASK_UPDATED',
-            module: 'TASKS',
-            details: `Updated task "${task.title}"`,
-            metadata: { taskId: task._id, changes: req.body }
-        });
+        // Sync & Notification
+        try {
+            const { syncProjectParticipants } = require('./chatController');
+            let projId = task.projectId;
+            if (modelType === 'JobTask') {
+                const job = await Job.findById(task.jobId);
+                projId = job?.projectId;
+            } else if (modelType === 'SubTask' && task.taskId) {
+                const parent = task.onModel === 'JobTask' ? await JobTask.findById(task.taskId) : await Task.findById(task.taskId);
+                projId = task.onModel === 'JobTask' ? (await Job.findById(parent?.jobId))?.projectId : parent?.projectId;
+            }
+            if (projId) await syncProjectParticipants(projId);
+        } catch (e) {}
 
-        const populated = await Task.findById(task._id)
-            .populate('projectId', 'name')
-            .populate('assignedTo', 'fullName email role')
-            .populate('assignedBy', 'fullName')
-            .populate('createdBy', 'fullName');
-
-        // Notify creator if worker marked complete
-        if (req.body.status === 'completed' && task.createdBy?.toString() !== userId.toString()) {
-            await dispatchNotification(req, {
-                userId: task.createdBy,
-                title: 'Task Completed',
-                message: `"${task.title}" has been marked complete by ${req.user.fullName}`,
-                link: '/tasks'
-            });
+        // Populate and Return
+        let resData;
+        if (modelType === 'Task') {
+            resData = await Task.findById(task._id).populate('projectId assignedTo assignedBy createdBy');
+        } else if (modelType === 'JobTask') {
+            resData = await JobTask.findById(task._id).populate({ path: 'jobId', populate: { path: 'projectId' } }).populate('assignedTo');
+            resData = resData.toObject(); resData.isJobTask = true; resData.projectId = resData.jobId?.projectId;
+        } else if (modelType === 'SubTask') {
+            resData = await SubTask.findById(task._id).populate('assignedTo createdBy');
+            resData = resData.toObject(); resData.isSubTask = true;
+        } else {
+            resData = task;
         }
 
-        res.json(populated);
+        res.json(resData);
     } catch (error) {
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({ message: 'Validation Failed', errors: messages });
+        }
+        console.error('[updateTask] Critical Error:', error);
         next(error);
     }
 };

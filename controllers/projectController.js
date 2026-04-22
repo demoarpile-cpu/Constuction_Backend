@@ -18,8 +18,9 @@ const getProjects = async (req, res, next) => {
             delete query.companyId;
         }
 
-        if (['PM', 'FOREMAN', 'WORKER'].includes(role)) {
-            const jobFilter = {
+        if (['PM', 'FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            
+            const jobFilter = { 
                 companyId,
                 $or: [
                     { foremanId: userId },
@@ -28,23 +29,23 @@ const getProjects = async (req, res, next) => {
             };
             if (role === 'PM') jobFilter.$or.push({ createdBy: userId });
 
-            // Optimization: Use distinct to get only IDs directly from indexes
-            const [assignedProjectIds, directProjectIds] = await Promise.all([
-                Job.distinct('projectId', jobFilter),
-                Project.distinct('_id', {
+            const [assignedJobs, directProjects] = await Promise.all([
+                Job.find(jobFilter).select('projectId').lean(),
+                Project.find({
                     companyId,
                     $or: [
                         { pmId: userId },
                         { createdBy: userId }
                     ]
-                })
+                }).select('_id').lean()
             ]);
-
-            const allProjectIds = [...new Set([
-                ...assignedProjectIds.map(id => id.toString()),
-                ...directProjectIds.map(id => id.toString())
-            ])];
             
+            const allProjectIds = [
+                ...new Set([
+                    ...assignedJobs.filter(j => j.projectId).map(j => j.projectId.toString()),
+                    ...directProjects.map(p => p._id.toString())
+                ])
+            ];
             query._id = { $in: allProjectIds };
         }
 
@@ -52,22 +53,13 @@ const getProjects = async (req, res, next) => {
             query.clientId = userId;
         }
 
-        console.time(`getProjects-${userId}`);
+        // Optimization: Select only necessary fields for the list view
         const projects = await Project.find(query)
-            .select('name status pmId clientId createdAt budget currentPhase location siteLatitude siteLongitude')
-            .populate('clientId', 'fullName')
-            .populate('pmId', 'fullName')
+            .select('name status pmId clientId createdAt budget image currentPhase location siteLatitude siteLongitude progress')
+            .populate('clientId', 'fullName email')
+            .populate('pmId', 'fullName email')
             .sort({ createdAt: -1 })
             .lean();
-        
-        console.timeEnd(`getProjects-${userId}`);
-        
-        // Final debug to see why payload is large
-        if (projects.length > 0) {
-            console.log(`[DEBUG] getProjects: Returning ${projects.length} projects. Fields in first: ${Object.keys(projects[0]).join(', ')}`);
-        } else {
-             console.log(`[DEBUG] getProjects: Returning 0 projects.`);
-        }
 
         res.json(projects);
     } catch (error) {
@@ -81,8 +73,9 @@ const getProjects = async (req, res, next) => {
 const getProjectById = async (req, res, next) => {
     try {
         const project = await Project.findById(req.params.id)
-            .populate('clientId', 'fullName email')
-            .populate('pmId', 'fullName email')
+            .populate('clientId', 'fullName email avatar')
+            .populate('createdBy', 'fullName avatar')
+            .populate('pmId', 'fullName email avatar')
             .lean();
 
         if (!project) {
@@ -120,9 +113,9 @@ const createProject = async (req, res, next) => {
                 : { name: new RegExp('^' + company.subscriptionPlanId + '$', 'i') };
 
             const plan = await Plan.findOne(planQuery);
-
+            
             // Define strict limits: Plan value > Plan model default > hard fallback
-            const maxProjects = plan?.maxProjects || 5;
+            const maxProjects = plan?.maxProjects || 5; 
 
             const currentProjectCount = await Project.countDocuments({ companyId });
             if (currentProjectCount >= maxProjects) {
@@ -467,26 +460,9 @@ const getProjectFinancialSummary = async (req, res, next) => {
     }
 };
 
-const getProjectImage = async (req, res, next) => {
-    try {
-        const project = await Project.findById(req.params.id).select('image').lean();
-        if (!project || !project.image) {
-            // Return a default image or 404
-            return res.status(404).json({ message: 'No image found' });
-        }
-
-        // If it's a base64 string, we might want to serve it correctly
-        // But for now, just sending the string is what the frontend expects as a src
-        res.json({ image: project.image });
-    } catch (error) {
-        next(error);
-    }
-};
-
 module.exports = {
     getProjects,
     getProjectById,
-    getProjectImage,
     createProject,
     updateProject,
     deleteProject,
