@@ -378,14 +378,25 @@ const updateProfile = async (req, res, next) => {
             throw new Error('User not found');
         }
 
-        const { fullName, email, avatar, phone } = req.body;
+        const { fullName, email, avatar, phone, address } = req.body;
 
         if (fullName) user.fullName = fullName;
         if (email) user.email = email;
         if (avatar) user.avatar = avatar;
         if (phone) user.phone = phone;
+        if (address) user.address = address;
 
         await user.save();
+
+        // If user is a company owner, also sync these basic details to the Company model
+        if (user.role === 'COMPANY_OWNER' && user.companyId) {
+            const company = await Company.findById(user.companyId);
+            if (company) {
+                if (address) company.address = address;
+                if (phone) company.phone = phone;
+                await company.save();
+            }
+        }
 
         const updatedUser = user.toObject();
         delete updatedUser.password;
