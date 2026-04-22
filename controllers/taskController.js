@@ -85,20 +85,44 @@ const getTasks = async (req, res, next) => {
             jobTaskQuery.status = { $nin: ['completed', 'cancelled'] };
         }
 
+        let workerSubTasks = [];
         if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
-            const [subTaskTaskIds, subTaskJobTaskIds] = await Promise.all([
-                SubTask.find({ assignedTo: userId, companyId, onModel: 'Task' }).distinct('taskId'),
-                SubTask.find({ assignedTo: userId, companyId, onModel: 'JobTask' }).distinct('taskId')
-            ]);
+            // Workers only see main tasks if directly assigned
+            query.assignedTo = userId;
+            jobTaskQuery.assignedTo = userId;
 
-            query.$or = [
-                { assignedTo: userId },
-                { _id: { $in: subTaskTaskIds } }
-            ];
-            jobTaskQuery.$or = [
-                { assignedTo: userId },
-                { _id: { $in: subTaskJobTaskIds } }
-            ];
+            // Also fetch sub-tasks specifically assigned to them
+            const subTaskFilter = { assignedTo: userId, companyId };
+            if (req.query.status) subTaskFilter.status = req.query.status;
+            if (req.query.priority) subTaskFilter.priority = req.query.priority;
+            if (req.query.excludeCompleted === 'true') {
+                subTaskFilter.status = { $nin: ['completed', 'cancelled'] };
+            }
+
+            workerSubTasks = await SubTask.find(subTaskFilter)
+                .populate('taskId')
+                .populate('assignedTo', 'fullName role')
+                .populate('createdBy', 'fullName')
+                .lean();
+
+            const tasksToPopulate = workerSubTasks.filter(st => st.onModel === 'Task' && st.taskId).map(st => st.taskId);
+            const jobTasksToPopulate = workerSubTasks.filter(st => st.onModel === 'JobTask' && st.taskId).map(st => st.taskId);
+
+            if (tasksToPopulate.length > 0) {
+                await Task.populate(tasksToPopulate, { path: 'projectId', select: 'name' });
+            }
+            if (jobTasksToPopulate.length > 0) {
+                const JobTask = require('../models/JobTask');
+                await JobTask.populate(jobTasksToPopulate, { path: 'jobId', populate: { path: 'projectId', select: 'name' } });
+            }
+
+            // Filter sub-tasks by projectId if requested
+            if (req.query.projectId) {
+                workerSubTasks = workerSubTasks.filter(st => {
+                    const pid = st.taskId?.projectId?._id || st.taskId?.jobId?.projectId?._id;
+                    return pid && pid.toString() === req.query.projectId;
+                });
+            }
         } else if (role === 'FOREMAN') {
             const managedJobs = await Job.find({ foremanId: userId, companyId }).select('assignedWorkers');
             const workerIds = managedJobs.flatMap(j => j.assignedWorkers || []);
@@ -149,11 +173,20 @@ const getTasks = async (req, res, next) => {
             isJobTask: true
         }));
 
-        const allTasks = [...tasks, ...mappedJobTasks].sort((a, b) => {
+        const mappedSubTasks = workerSubTasks.map(st => ({
+            ...st,
+            projectId: st.taskId?.projectId || st.taskId?.jobId?.projectId,
+            jobName: st.taskId?.jobId?.name,
+            assignedTo: st.assignedTo ? [st.assignedTo] : [],
+            isSubTask: true,
+            category: 'TASK'
+        }));
+
+        const allTasks = [...tasks, ...mappedJobTasks, ...mappedSubTasks].sort((a, b) => {
             const posA = a.position !== undefined ? a.position : 0;
             const posB = b.position !== undefined ? b.position : 0;
             if (posA !== posB) return posA - posB;
-            return new Date(b.createdAt) - new Date(a.createdAt);
+            return new Date(b.createdAt || b.createdAt) - new Date(a.createdAt || a.createdAt);
         });
         res.json(allTasks);
     } catch (error) {
@@ -168,26 +201,53 @@ const getMyTasks = async (req, res, next) => {
     try {
         const userId = req.user._id;
         const companyId = req.user.companyId;
+        const role = req.user.role;
 
-        const [subTaskTaskIds, subTaskJobTaskIds] = await Promise.all([
-            SubTask.find({ assignedTo: userId, companyId, onModel: 'Task' }).distinct('taskId'),
-            SubTask.find({ assignedTo: userId, companyId, onModel: 'JobTask' }).distinct('taskId')
-        ]);
+        const query = { companyId };
+        const jobTaskQuery = { companyId };
 
-        const query = {
-            companyId,
-            $or: [
+        let workerSubTasks = [];
+        if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            query.assignedTo = userId;
+            jobTaskQuery.assignedTo = userId;
+
+            const subTaskFilter = { assignedTo: userId, companyId };
+            if (req.query.status) subTaskFilter.status = req.query.status;
+            if (req.query.excludeCompleted === 'true') {
+                subTaskFilter.status = { $nin: ['completed', 'cancelled'] };
+            }
+
+            workerSubTasks = await SubTask.find(subTaskFilter)
+                .populate('taskId')
+                .populate('assignedTo', 'fullName role')
+                .populate('createdBy', 'fullName')
+                .lean();
+
+            const tasksToPopulate = workerSubTasks.filter(st => st.onModel === 'Task' && st.taskId).map(st => st.taskId);
+            const jobTasksToPopulate = workerSubTasks.filter(st => st.onModel === 'JobTask' && st.taskId).map(st => st.taskId);
+
+            if (tasksToPopulate.length > 0) {
+                await Task.populate(tasksToPopulate, { path: 'projectId', select: 'name' });
+            }
+            if (jobTasksToPopulate.length > 0) {
+                const JobTask = require('../models/JobTask');
+                await JobTask.populate(jobTasksToPopulate, { path: 'jobId', populate: { path: 'projectId', select: 'name' } });
+            }
+        } else {
+            const [subTaskTaskIds, subTaskJobTaskIds] = await Promise.all([
+                SubTask.find({ assignedTo: userId, companyId, onModel: 'Task' }).distinct('taskId'),
+                SubTask.find({ assignedTo: userId, companyId, onModel: 'JobTask' }).distinct('taskId')
+            ]);
+
+            query.$or = [
                 { assignedTo: userId },
                 { _id: { $in: subTaskTaskIds } }
-            ]
-        };
-        const jobTaskQuery = {
-            companyId,
-            $or: [
+            ];
+            jobTaskQuery.$or = [
                 { assignedTo: userId },
                 { _id: { $in: subTaskJobTaskIds } }
-            ]
-        };
+            ];
+        }
 
         if (req.query.status) {
             query.status = req.query.status;
@@ -227,7 +287,16 @@ const getMyTasks = async (req, res, next) => {
             isJobTask: true
         }));
 
-        const allTasks = [...tasks, ...mappedJobTasks].sort((a, b) => {
+        const mappedSubTasks = workerSubTasks.map(st => ({
+            ...st,
+            projectId: st.taskId?.projectId || st.taskId?.jobId?.projectId,
+            jobName: st.taskId?.jobId?.name,
+            assignedTo: st.assignedTo ? [st.assignedTo] : [],
+            isSubTask: true,
+            category: 'TASK'
+        }));
+
+        const allTasks = [...tasks, ...mappedJobTasks, ...mappedSubTasks].sort((a, b) => {
             const posA = a.position !== undefined ? a.position : 0;
             const posB = b.position !== undefined ? b.position : 0;
             if (posA !== posB) return posA - posB;
@@ -249,13 +318,9 @@ const getProjectTasks = async (req, res, next) => {
 
         const query = { companyId, projectId };
 
-        // Workers/Subcontractors see only their own tasks for the project (inc. sub-tasks)
+        // Workers/Subcontractors see only their own tasks for the project (NOT their parent tasks unless assigned)
         if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
-            const subTaskTaskIds = await SubTask.find({ assignedTo: userId, companyId, taskId: { $exists: true } }).distinct('taskId');
-            query.$or = [
-                { assignedTo: userId },
-                { _id: { $in: subTaskTaskIds } }
-            ];
+            query.assignedTo = userId;
         } else if (role === 'FOREMAN') {
             const managedJobs = await Job.find({ foremanId: userId, companyId }).select('assignedWorkers');
             const workerIds = managedJobs.flatMap(j => j.assignedWorkers || []);
@@ -268,28 +333,55 @@ const getProjectTasks = async (req, res, next) => {
             ];
         }
 
-        const tasks = await Task.find(query)
-            .select('-statusHistory')
-            .populate('projectId', 'name')
-            .populate('assignedTo', 'fullName role')
-            .populate('assignedBy', 'fullName role')
-            .populate('createdBy', 'fullName')
-            .sort({ position: 1, createdAt: -1, dueDate: 1 })
-            .lean();
+        const [tasks, subTasksAssignedToMe] = await Promise.all([
+            Task.find(query)
+                .select('-statusHistory')
+                .populate('projectId', 'name')
+                .populate('assignedTo', 'fullName role')
+                .populate('assignedBy', 'fullName role')
+                .populate('createdBy', 'fullName')
+                .sort({ position: 1, createdAt: -1, dueDate: 1 })
+                .lean(),
+            (['WORKER', 'SUBCONTRACTOR'].includes(role)) 
+                ? SubTask.find({ assignedTo: userId, companyId })
+                    .populate('taskId')
+                    .populate('assignedTo', 'fullName email role')
+                    .populate('createdBy', 'fullName')
+                    .lean()
+                : Promise.resolve([])
+        ]);
 
-        // Also fetch all sub-tasks for these tasks to show them in the flat list
-        const taskIds = tasks.map(t => t._id);
-        const subTasks = await SubTask.find({ taskId: { $in: taskIds }, companyId })
-            .populate('assignedTo', 'fullName email role')
-            .populate('createdBy', 'fullName')
-            .lean();
+        // Filter subtasks by project if they were fetched separately
+        let finalSubTasks = [];
+        if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            // Need to populate taskId fields for filtering
+            const tasksToPopulate = subTasksAssignedToMe.filter(st => st.onModel === 'Task' && st.taskId).map(st => st.taskId);
+            const jobTasksToPopulate = subTasksAssignedToMe.filter(st => st.onModel === 'JobTask' && st.taskId).map(st => st.taskId);
+            
+            if (tasksToPopulate.length > 0) await Task.populate(tasksToPopulate, { path: 'projectId' });
+            if (jobTasksToPopulate.length > 0) {
+                const JobTask = require('../models/JobTask');
+                await JobTask.populate(jobTasksToPopulate, { path: 'jobId', populate: { path: 'projectId' } });
+            }
+
+            finalSubTasks = subTasksAssignedToMe.filter(st => {
+                const pid = st.taskId?.projectId || st.taskId?.jobId?.projectId;
+                return pid?.toString() === projectId;
+            });
+        } else {
+            // Also fetch all sub-tasks for these tasks to show them in the flat list
+            const taskIds = tasks.map(t => t._id);
+            finalSubTasks = await SubTask.find({ taskId: { $in: taskIds }, companyId })
+                .populate('assignedTo', 'fullName email role')
+                .populate('createdBy', 'fullName')
+                .lean();
+        }
 
         // Mapped sub-tasks to match Task structure for UI consistency
-        const mappedSubTasks = subTasks.map(st => ({
+        const mappedSubTasks = finalSubTasks.map(st => ({
             ...st,
             isSubTask: true,
             assignedTo: st.assignedTo ? [st.assignedTo] : [],
-            // Use parent task's priority if not set? (No, SubTask has its own priority)
         }));
 
         const allTasks = [...tasks, ...mappedSubTasks].sort((a, b) => {
@@ -982,20 +1074,23 @@ const getSchedule = async (req, res, next) => {
         if (req.query.category) query.category = req.query.category;
 
         // Role-based visibility
+        let workerSubTasksForSchedule = [];
         if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
-            const [subTaskTaskIds, subTaskJobTaskIds] = await Promise.all([
-                SubTask.find({ assignedTo: userId, companyId, onModel: 'Task' }).distinct('taskId'),
-                SubTask.find({ assignedTo: userId, companyId, onModel: 'JobTask' }).distinct('taskId')
-            ]);
+            query.assignedTo = userId;
+            jobTaskQuery.assignedTo = userId;
 
-            query.$or = [
-                { assignedTo: userId },
-                { _id: { $in: subTaskTaskIds } }
-            ];
-            jobTaskQuery.$or = [
-                { assignedTo: userId },
-                { _id: { $in: subTaskJobTaskIds } }
-            ];
+            workerSubTasksForSchedule = await SubTask.find({ assignedTo: userId, companyId })
+                .populate('taskId')
+                .lean();
+            
+            // Populate taskId fields
+            const tasksToPopulate = workerSubTasksForSchedule.filter(st => st.onModel === 'Task' && st.taskId).map(st => st.taskId);
+            const jobTasksToPopulate = workerSubTasksForSchedule.filter(st => st.onModel === 'JobTask' && st.taskId).map(st => st.taskId);
+            if (tasksToPopulate.length > 0) await Task.populate(tasksToPopulate, { path: 'projectId' });
+            if (jobTasksToPopulate.length > 0) {
+                const JobTask = require('../models/JobTask');
+                await JobTask.populate(jobTasksToPopulate, { path: 'jobId', populate: { path: 'projectId' } });
+            }
         } else if (role === 'FOREMAN') {
             const managedJobs = await Job.find({ foremanId: userId, companyId }).select('assignedWorkers');
             const workerIds = managedJobs.flatMap(j => j.assignedWorkers || []);
@@ -1069,7 +1164,21 @@ const getSchedule = async (req, res, next) => {
             isJobTask: true
         }));
 
-        const allTasks = [...formatted, ...jobFormatted].sort((a, b) => {
+        const mappedWorkerSubTasks = workerSubTasksForSchedule.map(st => ({
+            id: st._id,
+            title: st.title,
+            startDate: st.startDate || st.createdAt,
+            endDate: st.dueDate,
+            dueDate: st.dueDate,
+            status: st.status,
+            priority: st.priority,
+            assignedTo: st.assignedTo ? [st.assignedTo] : [],
+            projectId: st.taskId?.projectId,
+            isSubTask: true,
+            dependencies: []
+        }));
+
+        const allTasks = [...formatted, ...jobFormatted, ...mappedWorkerSubTasks].sort((a, b) => {
             const posA = a.position !== undefined ? a.position : 0;
             const posB = b.position !== undefined ? b.position : 0;
             if (posA !== posB) return posA - posB;
