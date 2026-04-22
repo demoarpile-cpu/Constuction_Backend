@@ -86,6 +86,25 @@ const getTasks = async (req, res, next) => {
             jobTaskQuery.status = { $nin: ['completed', 'cancelled'] };
         }
 
+        // Global Search Support
+        if (req.query.q) {
+            const searchRegex = new RegExp(req.query.q, 'i');
+            const searchCondition = {
+                $or: [
+                    { title: searchRegex },
+                    { description: searchRegex }
+                ]
+            };
+            
+            // Merge searchCondition into both queries
+            // Use $and if $or was already present (e.g. from foreman logic)
+            if (query.$or) query.$and = [ { $or: query.$or }, searchCondition ];
+            else Object.assign(query, searchCondition);
+
+            if (jobTaskQuery.$or) jobTaskQuery.$and = [ { $or: jobTaskQuery.$or }, searchCondition ];
+            else Object.assign(jobTaskQuery, searchCondition);
+        }
+
         let workerSubTasks = [];
         if (['WORKER', 'SUBCONTRACTOR'].includes(role)) {
             // Workers only see main tasks if directly assigned
@@ -98,6 +117,10 @@ const getTasks = async (req, res, next) => {
             if (req.query.priority) subTaskFilter.priority = req.query.priority;
             if (req.query.excludeCompleted === 'true') {
                 subTaskFilter.status = { $nin: ['completed', 'cancelled'] };
+            }
+            if (req.query.q) {
+                const searchRegex = new RegExp(req.query.q, 'i');
+                subTaskFilter.$or = [ { title: searchRegex }, { remarks: searchRegex } ];
             }
 
             workerSubTasks = await SubTask.find(subTaskFilter)
@@ -143,6 +166,54 @@ const getTasks = async (req, res, next) => {
                 { assignedForeman: userId },
                 { _id: { $in: subTaskJobTaskIds } }
             ];
+
+            // Re-apply search if we added $or
+            if (req.query.q) {
+                const searchRegex = new RegExp(req.query.q, 'i');
+                const searchCondition = { $or: [{ title: searchRegex }, { description: searchRegex }] };
+                query.$and = [ { $or: query.$or }, searchCondition ];
+                delete query.$or;
+                jobTaskQuery.$and = [ { $or: jobTaskQuery.$or }, searchCondition ];
+                delete jobTaskQuery.$or;
+            }
+        } else if (req.query.q) {
+            // For Admin/PM when searching, if they search for a sub-task title, 
+            // we should also include matching sub-tasks in the flat list
+            const searchRegex = new RegExp(req.query.q, 'i');
+            const subTaskSearchFilter = {
+                companyId,
+                $or: [ { title: searchRegex }, { remarks: searchRegex } ]
+            };
+            if (req.query.projectId) {
+                // This is a bit complex since projectId is on Task, but we'll try
+                // Alternatively we can just let project filter happen after populate
+            }
+
+            const matchingSubTasks = await SubTask.find(subTaskSearchFilter)
+                .populate('taskId')
+                .populate('assignedTo', 'fullName role')
+                .populate('createdBy', 'fullName')
+                .lean();
+
+            // Filter by project if needed
+            let filteredMatching = matchingSubTasks;
+            if (req.query.projectId) {
+                // Populate taskId for filtering
+                const tasksToPopulate = filteredMatching.filter(st => st.onModel === 'Task' && st.taskId).map(st => st.taskId);
+                const jobTasksToPopulate = filteredMatching.filter(st => st.onModel === 'JobTask' && st.taskId).map(st => st.taskId);
+                if (tasksToPopulate.length > 0) await Task.populate(tasksToPopulate, { path: 'projectId' });
+                if (jobTasksToPopulate.length > 0) {
+                     const JobTask = require('../models/JobTask');
+                     await JobTask.populate(jobTasksToPopulate, { path: 'jobId', populate: { path: 'projectId' } });
+                }
+                
+                filteredMatching = filteredMatching.filter(st => {
+                    const pid = st.taskId?.projectId?._id || st.taskId?.jobId?.projectId?._id || st.taskId?.projectId || st.taskId?.jobId?.projectId;
+                    return pid && pid.toString() === req.query.projectId;
+                });
+            }
+
+            workerSubTasks = filteredMatching;
         }
 
         const [tasks, jobTasksData] = await Promise.all([
@@ -177,6 +248,7 @@ const getTasks = async (req, res, next) => {
             ...st,
             projectId: st.taskId?.projectId || st.taskId?.jobId?.projectId,
             jobName: st.taskId?.jobId?.name,
+            parentTaskTitle: st.taskId?.title,
             assignedTo: st.assignedTo ? [st.assignedTo] : [],
             isSubTask: true,
             category: 'TASK'
@@ -1116,6 +1188,39 @@ const getSchedule = async (req, res, next) => {
         }
         
         if (req.query.category) query.category = req.query.category;
+
+        // Global Search Support for Schedule
+        if (req.query.q) {
+            const searchRegex = new RegExp(req.query.q, 'i');
+            
+            // Find IDs of tasks that have matching sub-tasks
+            const [matchingSubTaskTaskIds, matchingSubTaskJobTaskIds] = await Promise.all([
+                SubTask.find({ companyId, onModel: 'Task', $or: [{ title: searchRegex }, { remarks: searchRegex }] }).distinct('taskId'),
+                SubTask.find({ companyId, onModel: 'JobTask', $or: [{ title: searchRegex }, { remarks: searchRegex }] }).distinct('taskId')
+            ]);
+
+            const searchCondition = {
+                $or: [
+                    { title: searchRegex },
+                    { description: searchRegex },
+                    { _id: { $in: matchingSubTaskTaskIds } }
+                ]
+            };
+
+            const jobTaskSearchCondition = {
+                $or: [
+                    { title: searchRegex },
+                    { description: searchRegex },
+                    { _id: { $in: matchingSubTaskJobTaskIds } }
+                ]
+            };
+
+            if (query.$or) query.$and = [ { $or: query.$or }, searchCondition ];
+            else Object.assign(query, searchCondition);
+
+            if (jobTaskQuery.$or) jobTaskQuery.$and = [ { $or: jobTaskQuery.$or }, jobTaskSearchCondition ];
+            else Object.assign(jobTaskQuery, jobTaskSearchCondition);
+        }
 
         // Role-based visibility
         let workerSubTasksForSchedule = [];
