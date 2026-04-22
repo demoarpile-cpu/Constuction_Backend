@@ -100,7 +100,7 @@ const createJobTask = async (req, res) => {
             companyId: req.user.companyId,
             title,
             description,
-            assignedTo,
+            assignedTo: assignedTo || null,
             assignedRoleType: assignedRoleType || '',
             assignedForeman,
             priority: normalizedPriority,
@@ -213,13 +213,15 @@ const updateJobTask = async (req, res) => {
             if (cancellationReason) task.cancellationReason = cancellationReason;
         } else {
             // Admin/PM/Foreman can update anything
+            const updates = { ...req.body };
             
             // Normalize status and priority if they exist in body
-            if (req.body.status === 'todo') req.body.status = 'pending';
-            if (req.body.priority) req.body.priority = req.body.priority.toLowerCase();
+            if (updates.status === 'todo') updates.status = 'pending';
+            if (updates.priority) updates.priority = updates.priority.toLowerCase();
+            if (updates.assignedTo === "") updates.assignedTo = null;
             
-            Object.assign(task, req.body);
-            if (req.body.assignedTo && req.user.role === 'FOREMAN' && !task.assignedForeman) {
+            Object.assign(task, updates);
+            if (updates.assignedTo && req.user.role === 'FOREMAN' && !task.assignedForeman) {
                 task.assignedForeman = req.user._id;
             }
         }

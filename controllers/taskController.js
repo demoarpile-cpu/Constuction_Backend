@@ -523,10 +523,13 @@ const updateTask = async (req, res, next) => {
         const oldStartDate = task.startDate;
         const oldDueDate = task.dueDate;
 
-        Object.assign(task, req.body);
+        const updates = { ...req.body };
+        if (updates.assignedTo === "") updates.assignedTo = [];
+
+        Object.assign(task, updates);
         // Re-resolve assignedTo as array
-        if (req.body.assignedTo && !Array.isArray(req.body.assignedTo)) {
-            task.assignedTo = [req.body.assignedTo].filter(Boolean);
+        if (updates.assignedTo && !Array.isArray(updates.assignedTo)) {
+            task.assignedTo = [updates.assignedTo].filter(Boolean);
         }
 
         await task.save();
@@ -860,6 +863,11 @@ const createSubTask = async (req, res, next) => {
 const updateSubTask = async (req, res, next) => {
     try {
         const updates = req.body;
+        
+        // Handle empty strings for ObjectId fields
+        if (updates.assignedTo === "") updates.assignedTo = null;
+        if (updates.parentSubTaskId === "") updates.parentSubTaskId = null;
+
         const SubTask = require('../models/SubTask');
 
         const subTask = await SubTask.findOneAndUpdate(
