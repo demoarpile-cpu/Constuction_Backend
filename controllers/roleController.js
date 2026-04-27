@@ -11,7 +11,19 @@ const Plan = require('../models/Plan');
 const getRoles = async (req, res, next) => {
     try {
         const roles = await Role.find();
-        res.json(roles);
+        
+        // Enhance roles with their permissions
+        const rolesWithPermissions = await Promise.all(roles.map(async (role) => {
+            const rolePermDocs = await RolePermission.find({ roleId: role._id }).populate('permissionId');
+            return {
+                ...role.toObject(),
+                permissions: rolePermDocs
+                    .filter(rp => rp.permissionId)
+                    .map(rp => rp.permissionId.key)
+            };
+        }));
+        
+        res.json(rolesWithPermissions);
     } catch (error) {
         next(error);
     }
