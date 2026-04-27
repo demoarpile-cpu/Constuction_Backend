@@ -53,9 +53,11 @@ const getProjects = async (req, res, next) => {
             query.clientId = userId;
         }
 
-        // Optimization: Select only necessary fields for the list view
+        // Optimization: Select only necessary fields for the list view. 
+        // We exclude 'image' if it's too large, but since we migrated to Cloudinary, 
+        // we'll keep it but ensure old Base64 data doesn't bloat the response.
         const projects = await Project.find(query)
-            .select('name status pmId clientId createdAt budget image currentPhase location siteLatitude siteLongitude progress')
+            .select('name status pmId clientId createdAt budget currentPhase location siteLatitude siteLongitude progress image')
             .populate('clientId', 'fullName email')
             .populate('pmId', 'fullName email')
             .sort({ createdAt: -1 })
@@ -125,6 +127,12 @@ const createProject = async (req, res, next) => {
         }
         // ---------------------------
 
+        // Handle Cloudinary Image
+        let finalImage = image;
+        if (req.file) {
+            finalImage = req.file.path;
+        }
+
         const project = await Project.create({
             companyId: req.user.companyId,
             name,
@@ -134,7 +142,7 @@ const createProject = async (req, res, next) => {
             budget,
             location,
             geofenceRadius,
-            image,
+            image: finalImage,
             pmId,
             createdBy: req.user._id
         });
@@ -187,11 +195,25 @@ const updateProject = async (req, res, next) => {
             throw new Error('Not authorized to update this project');
         }
 
-        const updatedProject = await Project.findByIdAndUpdate(req.params.id, req.body, {
+        const updateData = { ...req.body };
+        
+        // Sanitize "null" strings from frontend
+        Object.keys(updateData).forEach(key => {
+            if (updateData[key] === 'null' || updateData[key] === '') {
+                updateData[key] = null;
+            }
+        });
+
+        if (req.file) {
+            updateData.image = req.file.path;
+        }
+
+        const updatedProject = await Project.findByIdAndUpdate(req.params.id, updateData, {
             new: true,
             runValidators: true
         }).populate('pmId', 'fullName email')
-            .populate('createdBy', 'fullName');
+            .populate('createdBy', 'fullName')
+            .lean();
 
         // Sync chat participants if PM or Client changed
         if (req.body.pmId || req.body.clientId) {

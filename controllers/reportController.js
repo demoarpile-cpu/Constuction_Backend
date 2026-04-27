@@ -81,10 +81,20 @@ const getCompanyReport = async (req, res, next) => {
     try {
         const companyId = req.user.companyId;
 
-        // Financials
-        const invoices = await Invoice.find({ companyId });
-        const totalInvoiced = invoices.reduce((acc, inv) => acc + (inv.totalAmount || 0), 0);
-        const totalPaid = invoices.filter(inv => inv.status === 'paid').reduce((acc, inv) => acc + (inv.totalAmount || 0), 0);
+        // Optimized Financial Aggregation
+        const financialStats = await Invoice.aggregate([
+            { $match: { companyId: new mongoose.Types.ObjectId(companyId) } },
+            {
+                $group: {
+                    _id: null,
+                    totalInvoiced: { $sum: "$totalAmount" },
+                    totalPaid: { $sum: { $cond: [{ $eq: ["$status", "paid"] }, "$totalAmount", 0] } }
+                }
+            }
+        ]);
+
+        const totalInvoiced = financialStats[0]?.totalInvoiced || 0;
+        const totalPaid = financialStats[0]?.totalPaid || 0;
         const totalOutstanding = totalInvoiced - totalPaid;
 
         // Projects
@@ -98,15 +108,24 @@ const getCompanyReport = async (req, res, next) => {
         const totalJobs = await Job.countDocuments({ companyId });
         const completedJobs = await Job.countDocuments({ companyId, status: 'completed' });
 
-        // Labor Hours (from TimeLogs)
-        const timeLogs = await TimeLog.find({ companyId });
-        const totalLaborHours = timeLogs.reduce((acc, log) => {
-            if (log.clockOut && log.clockIn) {
-                const hours = (new Date(log.clockOut) - new Date(log.clockIn)) / (1000 * 60 * 60);
-                return acc + hours;
+        // Labor Hours (Optimized Aggregation)
+        const laborStats = await TimeLog.aggregate([
+            { $match: { companyId: new mongoose.Types.ObjectId(companyId), clockIn: { $exists: true }, clockOut: { $exists: true } } },
+            {
+                $group: {
+                    _id: null,
+                    totalHours: {
+                        $sum: {
+                            $divide: [
+                                { $subtract: ["$clockOut", "$clockIn"] },
+                                3600000
+                            ]
+                        }
+                    }
+                }
             }
-            return acc;
-        }, 0);
+        ]);
+        const totalLaborHours = laborStats[0]?.totalHours || 0;
 
         // Tasks counts
         const totalTasksCount = await Task.countDocuments({ companyId });
@@ -124,7 +143,7 @@ const getCompanyReport = async (req, res, next) => {
         const recentLogs = await TimeLog.find({
             companyId,
             createdAt: { $gte: sevenDaysAgo }
-        });
+        }).select('clockIn clockOut').lean();
 
         // Group by day
         const dailyProductivity = {};
@@ -154,9 +173,12 @@ const getCompanyReport = async (req, res, next) => {
             hours: Math.round(dailyProductivity[day] * 10) / 10
         }));
 
-        // Calculate Total Project Budget
-        const projects = await Project.find({ companyId });
-        const totalBudget = projects.reduce((acc, proj) => acc + (proj.budget || 0), 0);
+        // Calculate Total Project Budget (Optimized)
+        const budgetStats = await Project.aggregate([
+            { $match: { companyId: new mongoose.Types.ObjectId(companyId) } },
+            { $group: { _id: null, totalBudget: { $sum: "$budget" } } }
+        ]);
+        const totalBudget = budgetStats[0]?.totalBudget || 0;
 
         // Safety Incidents (Issues with category 'safety')
         const safetyIncidentsCount = await Issue.countDocuments({ companyId, category: 'safety' });
@@ -310,8 +332,8 @@ const getDashboardStats = async (req, res, next) => {
                 ]),
                 PurchaseOrder.countDocuments(pendingPOFilter),
                 TimeLog.countDocuments({ ...timeLogFilter, status: 'pending' }),
-                TimeLog.find(timeLogFilter).sort({ clockIn: -1 }).limit(5).populate('userId', 'fullName avatar').populate('projectId', 'name').lean(),
-                DailyLog.find(dailyLogFilter).sort({ date: -1 }).limit(3).populate('reportedBy', 'fullName').populate('projectId', 'name').lean(),
+                TimeLog.find(timeLogFilter).sort({ clockIn: -1 }).limit(5).populate('userId', 'fullName avatar').populate('projectId', 'name').select('clockIn clockOut userId projectId gpsIn').lean(),
+                DailyLog.find(dailyLogFilter).sort({ date: -1 }).limit(3).populate('reportedBy', 'fullName').populate('projectId', 'name').select('date reportedBy projectId weather workPerformed').lean(),
                 Equipment.aggregate([
                     { $match: { companyId: new mongoose.Types.ObjectId(companyId) } },
                     { $lookup: { from: 'jobs', localField: 'assignedJob', foreignField: '_id', as: 'job' } },
@@ -1077,11 +1099,11 @@ const getDetailedProjectReport = async (req, res, next) => {
         }
 
         const [jobs, projectTasks, projectRFIs, projectIssues, projectDailyLogs] = await Promise.all([
-            Job.find({ projectId, companyId }),
-            Task.find({ projectId, companyId }).populate('assignedTo', 'fullName role'),
-            RFI.find({ projectId, companyId }),
-            Issue.find({ projectId, companyId }).populate('assignedTo', 'fullName').populate('reportedBy', 'fullName').sort({ createdAt: -1 }),
-            DailyLog.find({ projectId, companyId }).populate('reportedBy', 'fullName').sort({ date: -1 })
+            Job.find({ projectId, companyId }).select('name description budget status startDate endDate progress').lean(),
+            Task.find({ projectId, companyId }).populate('assignedTo', 'fullName role').select('title status dueDate assignedTo').lean(),
+            RFI.find({ projectId, companyId }).select('subject status dueDate').lean(),
+            Issue.find({ projectId, companyId }).populate('assignedTo', 'fullName').populate('reportedBy', 'fullName').select('title status priority assignedTo reportedBy createdAt').sort({ createdAt: -1 }).lean(),
+            DailyLog.find({ projectId, companyId }).populate('reportedBy', 'fullName').select('date reportedBy weather workPerformed notes completed').sort({ date: -1 }).lean()
         ]);
 
         const detailedJobs = await Promise.all(jobs.map(async (job) => {
@@ -1330,18 +1352,45 @@ const getSidebarMetrics = async (req, res, next) => {
             }).select('name status').lean()
         ]);
 
-        // 2. Unread Chat Count (Parallel optimization)
+        // 2. Unread Chat Count (Single Aggregation Optimization)
         const participants = await ChatParticipant.find({ userId }).select('roomId lastReadAt').lean();
         let chatUnreadCount = 0;
         if (participants.length > 0) {
-            const chatCounts = await Promise.all(participants.map(p => 
-                Chat.countDocuments({
-                    roomId: p.roomId,
-                    createdAt: { $gt: p.lastReadAt || new Date(0) },
-                    sender: { $ne: userId }
-                })
-            ));
-            chatUnreadCount = chatCounts.reduce((sum, c) => sum + c, 0);
+            const roomIds = participants.map(p => p.roomId);
+            // Nuclear Optimization: Get total unread count across ALL rooms in ONE single database call
+            const unreadAgg = await ChatParticipant.aggregate([
+                { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+                {
+                    $lookup: {
+                        from: 'chats',
+                        let: { rId: '$roomId', lrAt: '$lastReadAt' },
+                        pipeline: [
+                            { 
+                                $match: { 
+                                    $expr: { 
+                                        $and: [
+                                            { $eq: ['$roomId', '$$rId'] },
+                                            { $gt: ['$createdAt', '$$lrAt'] },
+                                            { $ne: ['$sender', new mongoose.Types.ObjectId(userId)] }
+                                        ]
+                                    }
+                                }
+                            },
+                            { $count: 'unread' }
+                        ],
+                        as: 'unreadData'
+                    }
+                },
+                { $unwind: { path: '$unreadData', preserveNullAndEmptyArrays: true } },
+                { 
+                    $group: { 
+                        _id: null, 
+                        total: { $sum: { $ifNull: ['$unreadData.unread', 0] } } 
+                    } 
+                }
+            ]);
+
+            chatUnreadCount = unreadAgg.length > 0 ? unreadAgg[0].total : 0;
         }
 
         // 3. Task Count (Efficiently get total count without fetching full schedule)
