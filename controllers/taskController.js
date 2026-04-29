@@ -1039,11 +1039,24 @@ const createSubTask = async (req, res, next) => {
 
         const updateData = { subTaskCount: topLevelSubTasks.length, progress };
 
-        if (assignedTo) {
-            await Task.findByIdAndUpdate(req.params.id, {
-                $addToSet: { assignedTo: new mongoose.Types.ObjectId(assignedTo) },
-                ...updateData
+        if (modelType === 'JobTask') {
+            const JobTask = require('../models/JobTask');
+            await JobTask.findByIdAndUpdate(req.params.id, {
+                ...updateData,
+                status: (progress === 100 && topLevelSubTasks.length > 0) ? 'completed' : (progress > 0 ? 'in_progress' : 'pending')
             });
+        } else {
+            if (assignedTo) {
+                await Task.findByIdAndUpdate(req.params.id, {
+                    $addToSet: { assignedTo: new mongoose.Types.ObjectId(assignedTo) },
+                    ...updateData
+                });
+            } else {
+                await Task.findByIdAndUpdate(req.params.id, updateData);
+            }
+        }
+
+        if (assignedTo) {
             await dispatchNotification(req, {
                 userId: assignedTo,
                 title: 'New Sub-Task Assigned',
@@ -1051,8 +1064,6 @@ const createSubTask = async (req, res, next) => {
                 link: '/tasks',
                 type: 'task'
             });
-        } else {
-            await Task.findByIdAndUpdate(req.params.id, updateData);
         }
 
         const populated = await SubTask.findById(subTask._id)
@@ -1088,25 +1099,29 @@ const updateSubTask = async (req, res, next) => {
             throw new Error('Sub-task not found');
         }
 
-        // Recalculate main task progress
-        const allSubTasks = await SubTask.find({ taskId: req.params.id });
-        const completedCount = allSubTasks.filter(st => st.status === 'completed').length;
-        const progress = allSubTasks.length > 0 ? Math.round((completedCount / allSubTasks.length) * 100) : 0;
-
-        const updateData = { progress };
-        const isJobTask = subTask.onModel === 'JobTask';
-        
-        if (progress === 100 && allSubTasks.length > 0) {
-            updateData.status = isJobTask ? 'completed' : 'completed';
+        // Update parent subtask progress if nested
+        if (subTask.parentSubTaskId) {
+            await recalcSubTaskProgress(subTask.parentSubTaskId);
         }
 
+        // Recalculate main task progress (consistent with create/delete)
+        const topLevelSubTasks = await SubTask.find({ taskId: req.params.id, parentSubTaskId: null });
+        const completedCount = topLevelSubTasks.filter(st => st.status === 'completed').length;
+        const progress = topLevelSubTasks.length > 0 ? Math.round((completedCount / topLevelSubTasks.length) * 100) : 0;
+
+        const isJobTask = subTask.onModel === 'JobTask';
+        
         if (isJobTask) {
             const JobTask = require('../models/JobTask');
             await JobTask.findByIdAndUpdate(req.params.id, { 
-                status: updateData.status || (progress > 0 ? 'in_progress' : 'pending')
+                progress,
+                status: (progress === 100 && topLevelSubTasks.length > 0) ? 'completed' : (progress > 0 ? 'in_progress' : 'pending')
             });
         } else {
-            await Task.findByIdAndUpdate(req.params.id, updateData);
+            await Task.findByIdAndUpdate(req.params.id, { 
+                progress,
+                status: (progress === 100 && topLevelSubTasks.length > 0) ? 'completed' : undefined
+            });
         }
 
         const populated = await SubTask.findById(subTask._id).populate('assignedTo', 'fullName role');
@@ -1146,6 +1161,8 @@ const deleteSubTask = async (req, res, next) => {
         if (subTask.onModel === 'JobTask') {
             const JobTask = require('../models/JobTask');
             await JobTask.findByIdAndUpdate(req.params.id, {
+                progress,
+                subTaskCount: topLevelSubTasks.length,
                 status: progress === 100 ? 'completed' : (progress > 0 ? 'in_progress' : 'pending')
             });
         } else {
