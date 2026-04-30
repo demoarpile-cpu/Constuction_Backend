@@ -59,26 +59,19 @@ const getPayrollPreview = async (req, res, next) => {
         const { startDate, endDate } = req.query;
         const companyId = req.user.companyId;
 
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-
         // 1. Find all approved time logs in period
         const logs = await TimeLog.find({
             companyId,
             status: 'approved',
-            clockIn: { $gte: start },
-            clockOut: { $lte: end, $ne: null }
+            clockIn: { $gte: new Date(startDate) },
+            clockOut: { $lte: new Date(endDate), $ne: null }
         }).populate('userId');
 
         // 2. Group by User
         const userPayroll = {};
 
         logs.forEach(log => {
-            if (!log.userId) return; // Skip if user not found
-            
-            const userId = log.userId._id.toString();
+            const userId = log.userId._id;
             if (!userPayroll[userId]) {
                 userPayroll[userId] = {
                     user: log.userId,
@@ -87,9 +80,7 @@ const getPayrollPreview = async (req, res, next) => {
                 };
             }
             const hours = (new Date(log.clockOut) - new Date(log.clockIn)) / 3600000;
-            if (hours > 0) {
-                userPayroll[userId].totalHours += hours;
-            }
+            userPayroll[userId].totalHours += hours;
         });
 
         // 3. Calculate Deductions for each user
@@ -102,8 +93,7 @@ const getPayrollPreview = async (req, res, next) => {
                 role: item.user.role,
                 totalHours: Number(item.totalHours.toFixed(2)),
                 rate: item.rate,
-                ...deductions,
-                status: 'pending' // Default status for preview
+                ...deductions
             };
         });
 
@@ -165,17 +155,12 @@ const getPayrollDetails = async (req, res, next) => {
         const { userId, startDate, endDate } = req.query;
         const companyId = req.user.companyId;
 
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-
         const logs = await TimeLog.find({
             companyId,
             userId,
             status: 'approved',
-            clockIn: { $gte: start },
-            clockOut: { $lte: end, $ne: null }
+            clockIn: { $gte: new Date(startDate) },
+            clockOut: { $lte: new Date(endDate), $ne: null }
         })
             .populate('userId', 'fullName role hourlyRate')
             .populate('jobId', 'title')
