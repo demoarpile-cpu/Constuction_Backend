@@ -59,43 +59,63 @@ const getPayrollPreview = async (req, res, next) => {
         const { startDate, endDate } = req.query;
         const companyId = req.user.companyId;
 
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+
         // 1. Find all approved time logs in period
         const logs = await TimeLog.find({
             companyId,
             status: 'approved',
-            clockIn: { $gte: new Date(startDate) },
-            clockOut: { $lte: new Date(endDate), $ne: null }
+            clockIn: { $gte: start },
+            clockOut: { $lte: end, $ne: null }
         }).populate('userId');
 
         // 2. Group by User
-        const userPayroll = {};
+        const userPayroll = new Map();
 
         logs.forEach(log => {
-            const userId = log.userId._id;
-            if (!userPayroll[userId]) {
-                userPayroll[userId] = {
+            if (!log.userId) return;
+            
+            const userId = log.userId._id.toString();
+            if (!userPayroll.has(userId)) {
+                userPayroll.set(userId, {
                     user: log.userId,
                     totalHours: 0,
                     rate: log.userId.hourlyRate || 30
-                };
+                });
             }
             const hours = (new Date(log.clockOut) - new Date(log.clockIn)) / 3600000;
-            userPayroll[userId].totalHours += hours;
+            if (hours > 0) {
+                userPayroll.get(userId).totalHours += hours;
+            }
         });
 
-        // 3. Calculate Deductions for each user
-        const results = Object.values(userPayroll).map(item => {
+        // 3. Calculate Deductions and check for existing records
+        const results = await Promise.all(Array.from(userPayroll.values()).map(async (item) => {
             const gross = item.totalHours * item.rate;
             const deductions = calculateDeductions(gross);
+            
+            // Check if this payroll has already been run for this user & period
+            // We use a range check to be safe against slight timestamp variations
+            const existing = await Payroll.findOne({
+                companyId,
+                employeeId: item.user._id,
+                payPeriodStart: { $gte: new Date(start).setHours(0,0,0,0), $lte: new Date(start).setHours(23,59,59,999) },
+                payPeriodEnd: { $gte: new Date(end).setHours(0,0,0,0), $lte: new Date(end).setHours(23,59,59,999) }
+            });
+
             return {
                 userId: item.user._id,
                 name: item.user.fullName,
                 role: item.user.role,
                 totalHours: Number(item.totalHours.toFixed(2)),
                 rate: item.rate,
-                ...deductions
+                ...deductions,
+                status: existing ? existing.status : 'pending'
             };
-        });
+        }));
 
         res.json(results);
     } catch (error) {
@@ -110,11 +130,17 @@ const runPayroll = async (req, res, next) => {
         const { records, startDate, endDate } = req.body;
         const companyId = req.user.companyId;
 
+        // Ensure dates match the preview boundaries exactly
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+
         const payrollRecords = records.map(rec => ({
             companyId,
             employeeId: rec.userId,
-            payPeriodStart: new Date(startDate),
-            payPeriodEnd: new Date(endDate),
+            payPeriodStart: start,
+            payPeriodEnd: end,
             totalHours: rec.totalHours,
             hourlyRate: rec.rate,
             grossPay: rec.grossPay,
@@ -155,12 +181,17 @@ const getPayrollDetails = async (req, res, next) => {
         const { userId, startDate, endDate } = req.query;
         const companyId = req.user.companyId;
 
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+
         const logs = await TimeLog.find({
             companyId,
             userId,
             status: 'approved',
-            clockIn: { $gte: new Date(startDate) },
-            clockOut: { $lte: new Date(endDate), $ne: null }
+            clockIn: { $gte: start },
+            clockOut: { $lte: end, $ne: null }
         })
             .populate('userId', 'fullName role hourlyRate')
             .populate('jobId', 'title')
