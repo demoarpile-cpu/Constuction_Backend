@@ -7,7 +7,7 @@ const Task = require('../models/Task');
 const Job = require('../models/Job');
 const mongoose = require('mongoose');
 
-const ADMIN_ROLES = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM'];
+const ADMIN_ROLES = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN'];
 const INTERNAL_ROLES = ['COMPANY_OWNER', 'PM', 'FOREMAN', 'WORKER', 'SUPER_ADMIN', 'ADMIN'];
 
 /** Find existing DIRECT room between two users, or null */
@@ -164,22 +164,27 @@ async function getUserChatScope(reqUser) {
     }
 
     if (role === 'PM') {
-        const projects = await Project.find({ companyId }).select('_id clientId');
-        const allClientIds = projects.map(p => p.clientId).filter(Boolean);
-        const allProjectIds = projects.map(p => String(p._id));
+        const pmProjects = await Project.find({ 
+            companyId, 
+            $or: [{ pmId: reqUser._id }, { createdBy: reqUser._id }] 
+        }).select('_id clientId');
+        
+        const assignedClientIds = pmProjects.map(p => String(p.clientId)).filter(id => id && id !== 'undefined');
+        const assignedProjectIds = pmProjects.map(p => String(p._id));
 
         const scopeUsers = await User.find({ 
             companyId, 
             isActive: true, 
             $or: [
-                { role: { $in: ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM', 'FOREMAN', 'WORKER', 'SUBCONTRACTOR', 'CLIENT'] } }
+                { role: { $in: ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM', 'FOREMAN', 'WORKER', 'SUBCONTRACTOR'] } },
+                { _id: { $in: assignedClientIds } }
             ]
         }).select('_id');
         
         return {
             isAdmin: false,
             hideInternal: false,
-            projectIdSet: new Set(allProjectIds),
+            projectIdSet: new Set(assignedProjectIds),
             directUserIdSet: new Set(scopeUsers.map((u) => String(u._id)))
         };
     }
@@ -200,8 +205,24 @@ async function getUserChatScope(reqUser) {
     let directUsersQuery = { companyId, _id: { $ne: reqUser._id }, isActive: true };
     if (['FOREMAN', 'WORKER'].includes(role)) {
         directUsersQuery = { ...directUsersQuery, role: { $in: INTERNAL_ROLES } };
-    } else if (['CLIENT', 'SUBCONTRACTOR'].includes(role)) {
+    } else if (role === 'SUBCONTRACTOR') {
         directUsersQuery = { ...directUsersQuery, role: { $in: ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM'] } };
+    } else if (role === 'CLIENT') {
+        // Client only sees Admins + PMs assigned to their projects
+        const clientProjects = await Project.find({ companyId, clientId: reqUser._id }).select('pmId createdBy');
+        const allowedPMIds = new Set();
+        clientProjects.forEach(p => {
+            if (p.pmId) allowedPMIds.add(String(p.pmId));
+            if (p.createdBy) allowedPMIds.add(String(p.createdBy));
+        });
+
+        directUsersQuery = { 
+            ...directUsersQuery, 
+            $or: [
+                { role: { $in: ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN'] } },
+                { _id: { $in: Array.from(allowedPMIds) } }
+            ]
+        };
     }
     const directUsers = await User.find(directUsersQuery).select('_id');
 
@@ -725,7 +746,7 @@ const getChatUsers = async (req, res, next) => {
     try {
         const { companyId, _id, role } = req.user;
 
-        const admins = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM'];
+        const admins = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN'];
         const internalRoles = ['COMPANY_OWNER', 'PM', 'FOREMAN', 'WORKER', 'SUPER_ADMIN'];
         let roleFilter = {};
 
