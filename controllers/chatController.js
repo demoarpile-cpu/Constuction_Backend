@@ -7,7 +7,7 @@ const Task = require('../models/Task');
 const Job = require('../models/Job');
 const mongoose = require('mongoose');
 
-const ADMIN_ROLES = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN'];
+const ADMIN_ROLES = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM'];
 const INTERNAL_ROLES = ['COMPANY_OWNER', 'PM', 'FOREMAN', 'WORKER', 'SUPER_ADMIN', 'ADMIN'];
 
 /** Find existing DIRECT room between two users, or null */
@@ -725,7 +725,7 @@ const getChatUsers = async (req, res, next) => {
     try {
         const { companyId, _id, role } = req.user;
 
-        const admins = ['COMPANY_OWNER', 'SUPER_ADMIN'];
+        const admins = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN', 'PM'];
         const internalRoles = ['COMPANY_OWNER', 'PM', 'FOREMAN', 'WORKER', 'SUPER_ADMIN'];
         let roleFilter = {};
 
