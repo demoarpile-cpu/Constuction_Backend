@@ -18,7 +18,7 @@ const getProjects = async (req, res, next) => {
             delete query.companyId;
         }
 
-        if (['PM', 'FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+        if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
             
             const jobFilter = { 
                 companyId,

@@ -5,7 +5,17 @@ const Issue = require('../models/Issue');
 // @access  Private
 const getIssues = async (req, res, next) => {
     try {
-        const query = { companyId: req.user.companyId };
+        const { role, _id: userId, companyId } = req.user;
+        const query = { companyId };
+
+        // Role-based filtering
+        if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            query.$or = [
+                { assignedTo: userId },
+                { reportedBy: userId }
+            ];
+        }
+
         if (req.query.projectId) query.projectId = req.query.projectId;
         if (req.query.jobId) query.jobId = req.query.jobId;
         if (req.query.status) query.status = req.query.status;
