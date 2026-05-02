@@ -285,17 +285,31 @@ const getProjectMembers = async (req, res, next) => {
 
         // Find all users assigned to tasks in this project
         const tasks = await Task.find({ projectId: req.params.id }).select('assignedTo');
-        const assignedUserIds = [...new Set(tasks.flatMap(t => t.assignedTo.map(id => id.toString())))];
+        const assignedUserIds = new Set();
+        
+        tasks.forEach(t => {
+            if (t.assignedTo) {
+                t.assignedTo.forEach(id => assignedUserIds.add(id.toString()));
+            }
+        });
 
-        // Include project creator and company owners/PMs might also be relevant
-        // For now, let's get all staff who are assigned to tasks + the creator
-        if (project.createdBy) {
-            assignedUserIds.push(project.createdBy.toString());
-        }
+        // Also check Job-level assignments
+        const Job = require('../models/Job');
+        const jobs = await Job.find({ projectId: req.params.id }).select('foremanId assignedWorkers');
+        jobs.forEach(j => {
+            if (j.foremanId) assignedUserIds.add(j.foremanId.toString());
+            if (j.assignedWorkers) {
+                j.assignedWorkers.forEach(id => assignedUserIds.add(id.toString()));
+            }
+        });
+
+        // Include project creator and assigned PM
+        if (project.createdBy) assignedUserIds.add(project.createdBy.toString());
+        if (project.pmId) assignedUserIds.add(project.pmId.toString());
 
         const members = await User.find({
-            _id: { $in: assignedUserIds },
-            role: { $ne: 'CLIENT' } // Only staff members, client already knows themselves
+            _id: { $in: Array.from(assignedUserIds) },
+            role: { $ne: 'CLIENT' }
         }).select('fullName email role phone status');
 
         res.json(members);
