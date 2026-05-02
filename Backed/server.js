@@ -122,18 +122,23 @@ io.use((socket, next) => {
 
 // Socket.io Connection
 io.on('connection', async (socket) => {
-    console.log('New client connected:', socket.id, 'User:', socket.user.id);
+    const authedUserId = String(socket.user?.userId || socket.user?.id || socket.user?._id || '');
+    if (!authedUserId) {
+        console.error('[Socket] Token missing userId; disconnecting', socket.id);
+        socket.disconnect(true);
+        return;
+    }
 
-    // Join personal room
-    socket.join(socket.user.id);
+    console.log('New client connected:', socket.id, 'User:', authedUserId);
 
-    // Join all chat rooms the user is a participant of
+    socket.join(authedUserId);
+
     try {
         const ChatParticipant = require('./models/ChatParticipant');
-        const participants = await ChatParticipant.find({ userId: socket.user.id });
-        participants.forEach(p => {
+        const participants = await ChatParticipant.find({ userId: authedUserId });
+        participants.forEach((p) => {
             socket.join(p.roomId.toString());
-            console.log(`User ${socket.user.id} joined room ${p.roomId}`);
+            console.log(`User ${authedUserId} joined room ${p.roomId}`);
         });
     } catch (err) {
         console.error('Error joining rooms on connect:', err);
@@ -157,10 +162,10 @@ io.on('connection', async (socket) => {
         }
     });
 
-    // Handle room joining dynamically (e.g. when a new room is created)
     socket.on('join_room', (roomId) => {
-        socket.join(roomId);
-        console.log(`User ${socket.user.id} joined room manually: ${roomId}`);
+        if (roomId == null || roomId === '') return;
+        socket.join(String(roomId));
+        console.log(`User ${authedUserId} joined room manually: ${roomId}`);
     });
 
     socket.on('disconnect', () => {

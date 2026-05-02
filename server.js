@@ -113,7 +113,7 @@ io.use((socket, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        socket.user = decoded; // Contains id, role, etc.
+        socket.user = decoded; // { userId, role, companyId, ... }
         next();
     } catch (err) {
         return next(new Error('Authentication error: Invalid token'));
@@ -128,7 +128,8 @@ io.on('connection', async (socket) => {
     // Join personal room
     socket.join(userId.toString());
 
-    // Join all chat rooms the user is a participant of
+
+    // Join all chat rooms this user participates in (required for io.to(roomId).emit('new_message'))
     try {
         const ChatParticipant = require('./models/ChatParticipant');
         const participants = await ChatParticipant.find({ userId });

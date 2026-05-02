@@ -339,7 +339,7 @@ const getClientProgress = async (req, res, next) => {
 
         // Upcoming Work (Next 5)
         const upcomingWork = tasks
-            .filter(t => t.status === 'pending' || t.status === 'in-progress')
+            .filter((t) => t.status === 'pending' || t.status === 'in_progress' || t.status === 'in-progress')
             .sort((a, b) => (a.dueDate || Infinity) - (b.dueDate || Infinity))
             .slice(0, 5)
             .map(t => t.title);
