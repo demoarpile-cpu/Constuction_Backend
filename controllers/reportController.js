@@ -1346,11 +1346,19 @@ const getSidebarMetrics = async (req, res, next) => {
         let projectFilter = { companyId, status: { $in: ['active', 'planning', 'on-hold'] } };
 
         if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            const JobTask = require('../models/JobTask');
+            const userTasks = await JobTask.find({
+                $or: [{ assignedTo: userId }, { assignedForeman: userId }]
+            }).select('jobId').lean();
+            
+            const taskJobIds = userTasks.map(t => t.jobId);
+
             const assignedJobs = await Job.find({
                 companyId,
                 $or: [
                     { assignedWorkers: userId },
-                    { foremanId: userId }
+                    { foremanId: userId },
+                    { _id: { $in: taskJobIds } }
                 ]
             }).select('projectId').lean();
 
@@ -1445,11 +1453,19 @@ const getSidebarMetrics = async (req, res, next) => {
 
         // If it's a Foreman/Worker/Subcontractor, we want to show JOBS in the quick selector
         if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            const JobTask = require('../models/JobTask');
+            const userTasks = await JobTask.find({
+                $or: [{ assignedTo: userId }, { assignedForeman: userId }]
+            }).select('jobId').lean();
+            
+            const taskJobIds = userTasks.map(t => t.jobId);
+
             const assignedJobs = await Job.find({
                 companyId,
                 $or: [
                     { assignedWorkers: userId },
-                    { foremanId: userId }
+                    { foremanId: userId },
+                    { _id: { $in: taskJobIds } }
                 ]
             }).select('name status projectId').lean();
 
