@@ -1345,23 +1345,7 @@ const getSidebarMetrics = async (req, res, next) => {
         // 1. Determine Project Filter based on Role
         let projectFilter = { companyId, status: { $in: ['active', 'planning', 'on-hold'] } };
 
-        if (role === 'PM') {
-            const [directProjects, jobProjects] = await Promise.all([
-                Project.find({
-                    companyId,
-                    $or: [{ pmIds: userId }, { pmId: userId }, { createdBy: userId }]
-                }).select('_id').lean(),
-                Job.find({
-                    $or: [{ foremanId: userId }, { createdBy: userId }]
-                }).select('projectId').lean()
-            ]);
-
-            const allProjectIds = [...new Set([
-                ...directProjects.map(p => p._id.toString()),
-                ...jobProjects.filter(j => j.projectId).map(j => j.projectId.toString())
-            ])];
-            projectFilter._id = { $in: allProjectIds };
-        } else if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+        if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
             const assignedJobs = await Job.find({
                 companyId,
                 $or: [
