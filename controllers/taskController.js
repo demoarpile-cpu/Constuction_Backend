@@ -569,7 +569,7 @@ const createTask = async (req, res, next) => {
                 userId: uid,
                 title: 'New Task Assigned',
                 message: `You have been assigned: "${title}" by ${req.user.fullName}`,
-                link: '/tasks',
+                link: '/company-admin/tasks',
                 type: 'task'
             });
         }
@@ -653,7 +653,7 @@ const assignTask = async (req, res, next) => {
                 userId: uid,
                 title: 'Task Assigned to You',
                 message: `"${task.title}" has been assigned to you by ${req.user.fullName}`,
-                link: '/tasks',
+                link: '/company-admin/tasks',
                 type: 'task'
             });
         }
@@ -1160,7 +1160,7 @@ const createSubTask = async (req, res, next) => {
                 userId: assignedTo,
                 title: 'New Sub-Task Assigned',
                 message: `You were assigned a sub-task: "${title}" in "${parentTask.title}"`,
-                link: '/tasks',
+                link: '/company-admin/tasks',
                 type: 'task'
             });
         }

@@ -22,9 +22,17 @@ const getRFIs = async (req, res, next) => {
                 { raisedBy: req.user._id },
                 { assignedTo: req.user._id }
             ];
-        } else if (req.user.role === 'FOREMAN' || req.user.role === 'PM') {
-            // Foreman/PM: Assigned projects (For now assuming they have access to all project RFIs if they hit the endpoint with a projectId)
-            // If we want strict project assignment, we would need to filter by projects they are assigned to.
+        } else if (req.user.role === 'FOREMAN') {
+            // Foreman: Only RFIs they raised
+            query.raisedBy = req.user._id;
+        } else if (req.user.role === 'PM') {
+            // PM: Assigned projects
+            const Project = require('../models/Project');
+            const projects = await Project.find({ 
+                $or: [{ pmIds: req.user._id }, { pmId: req.user._id }, { createdBy: req.user._id }] 
+            }, '_id');
+            const projectIds = projects.map(p => p._id);
+            query.projectId = { $in: projectIds };
         }
 
         if (req.query.projectId) {
@@ -83,6 +91,15 @@ const getRFIStats = async (req, res, next) => {
                 { raisedBy: req.user._id },
                 { assignedTo: req.user._id }
             ];
+        } else if (req.user.role === 'FOREMAN') {
+            query.raisedBy = req.user._id;
+        } else if (req.user.role === 'PM') {
+            const Project = require('../models/Project');
+            const projects = await Project.find({ 
+                $or: [{ pmIds: req.user._id }, { pmId: req.user._id }, { createdBy: req.user._id }] 
+            }, '_id');
+            const projectIds = projects.map(p => p._id);
+            query.projectId = { $in: projectIds };
         }
 
         const [total, open, inReview, answered, closed, overdue, highPriority, recent] = await Promise.all([
@@ -144,6 +161,15 @@ const getRFIById = async (req, res, next) => {
                 { raisedBy: req.user._id },
                 { assignedTo: req.user._id }
             ];
+        } else if (req.user.role === 'FOREMAN') {
+            query.raisedBy = req.user._id;
+        } else if (req.user.role === 'PM') {
+            const Project = require('../models/Project');
+            const projects = await Project.find({ 
+                $or: [{ pmIds: req.user._id }, { pmId: req.user._id }, { createdBy: req.user._id }] 
+            }, '_id');
+            const projectIds = projects.map(p => p._id);
+            query.projectId = { $in: projectIds };
         }
 
         const rfi = await RFI.findOne(query)

@@ -403,21 +403,33 @@ const getDashboardStats = async (req, res, next) => {
             }));
         }
 
-        if (['WORKER', 'SUBCONTRACTOR', 'FOREMAN'].includes(role)) {
+        if (['WORKER', 'SUBCONTRACTOR', 'FOREMAN', 'PM'].includes(role)) {
             const startOfWeek = new Date();
             startOfWeek.setDate(today.getDate() - today.getDay());
             startOfWeek.setHours(0,0,0,0);
 
+            // For PMs, we want to include projects they manage
+            let jobQuery = {
+                companyId,
+                $or: [
+                    { assignedWorkers: userId },
+                    { foremanId: userId }
+                ]
+            };
+
+            if (role === 'PM') {
+                const pmProjects = await Project.find({
+                    companyId,
+                    $or: [{ pmIds: userId }, { pmId: userId }, { createdBy: userId }]
+                }).select('_id').lean();
+                const pmProjectIds = pmProjects.map(p => p._id);
+                jobQuery.$or.push({ projectId: { $in: pmProjectIds } });
+            }
+
             const [myLogsToday, activeLog, jobs, userJobTasks, globalTasks, userSubTasks, myRecentActivity] = await Promise.all([
                 TimeLog.find({ userId, clockIn: { $gte: today } }).lean(),
                 TimeLog.findOne({ userId, clockOut: null }).populate('projectId', 'name').populate('taskId', 'title').lean(),
-                Job.find({
-                    companyId,
-                    $or: [
-                        { assignedWorkers: userId },
-                        { foremanId: userId }
-                    ]
-                }).populate('projectId', 'name').lean(),
+                Job.find(jobQuery).populate('projectId', 'name').lean(),
                 JobTask.find({
                     companyId,
                     $or: [{ assignedTo: userId }, { assignedForeman: userId }],
@@ -1344,6 +1356,8 @@ const getSidebarMetrics = async (req, res, next) => {
 
         // 1. Determine Project Filter based on Role
         let projectFilter = { companyId, status: { $in: ['active', 'planning', 'on-hold'] } };
+        let accessibleProjectIds = [];
+        let isGlobalRole = ['COMPANY_OWNER', 'SUPER_ADMIN', 'ADMIN'].includes(role);
 
         if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
             const JobTask = require('../models/JobTask');
@@ -1362,85 +1376,96 @@ const getSidebarMetrics = async (req, res, next) => {
                 ]
             }).select('projectId').lean();
 
-            const projectIds = [...new Set(assignedJobs.filter(j => j.projectId).map(j => j.projectId.toString()))];
-            projectFilter._id = { $in: projectIds };
+            accessibleProjectIds = [...new Set(assignedJobs.filter(j => j.projectId).map(j => j.projectId.toString()))];
+            projectFilter._id = { $in: accessibleProjectIds };
+        } else if (role === 'PM') {
+            const pmProjects = await Project.find({
+                companyId,
+                $or: [
+                    { pmIds: userId },
+                    { pmId: userId },
+                    { createdBy: userId }
+                ]
+            }).select('_id').lean();
+            accessibleProjectIds = pmProjects.map(p => p._id.toString());
+            projectFilter._id = { $in: accessibleProjectIds };
         }
 
-
-
-        // 2. Unread Chat Count (Single Aggregation Optimization)
-        const participants = await ChatParticipant.find({ userId }).select('roomId lastReadAt').lean();
+        // 2. Unread Chat Count (Scoped to accessible rooms)
+        const participants = await ChatParticipant.find({ userId })
+            .populate({
+                path: 'roomId',
+                select: 'roomType projectId'
+            })
+            .lean();
+            
         let chatUnreadCount = 0;
         if (participants.length > 0) {
-            const roomIds = participants.map(p => p.roomId);
-            // Nuclear Optimization: Get total unread count across ALL rooms in ONE single database call
-            const unreadAgg = await ChatParticipant.aggregate([
-                { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-                {
-                    $lookup: {
-                        from: 'chats',
-                        let: { rId: '$roomId', lrAt: '$lastReadAt' },
-                        pipeline: [
-                            { 
-                                $match: { 
-                                    $expr: { 
-                                        $and: [
-                                            { $eq: ['$roomId', '$$rId'] },
-                                            { $gt: ['$createdAt', '$$lrAt'] },
-                                            { $ne: ['$sender', new mongoose.Types.ObjectId(userId)] }
-                                        ]
-                                    }
-                                }
-                            },
-                            { $count: 'unread' }
-                        ],
-                        as: 'unreadData'
-                    }
-                },
-                { $unwind: { path: '$unreadData', preserveNullAndEmptyArrays: true } },
-                { 
-                    $group: { 
-                        _id: null, 
-                        total: { $sum: { $ifNull: ['$unreadData.unread', 0] } } 
-                    } 
+            // Filter participants based on access scope
+            const allowedParticipants = participants.filter(p => {
+                const room = p.roomId;
+                if (!room) return false;
+                if (isGlobalRole) return true;
+                if (room.roomType === 'INTERNAL') return true;
+                if (room.roomType === 'PROJECT_GROUP') {
+                    return room.projectId && accessibleProjectIds.includes(room.projectId.toString());
                 }
-            ]);
+                if (room.roomType === 'DIRECT') {
+                    // For Direct, we'll allow it if they are a participant (already checked by ChatParticipant query)
+                    // and we'll assume the DM scope is handled at room creation time.
+                    return true;
+                }
+                return false;
+            });
 
-            chatUnreadCount = unreadAgg.length > 0 ? unreadAgg[0].total : 0;
+            const counts = await Promise.all(allowedParticipants.map(p => 
+                Chat.countDocuments({
+                    roomId: p.roomId._id,
+                    createdAt: { $gt: p.lastReadAt },
+                    sender: { $ne: userId }
+                })
+            ));
+            chatUnreadCount = counts.reduce((acc, c) => acc + c, 0);
         }
 
-        // 3. Task Count (Efficiently get total count without fetching full schedule)
-        // For Admin/Owner, get all active. For others, get assigned.
+        // 3. Task Count (Efficiently get total count scoped to role)
         let taskQuery = { companyId, status: { $nin: ['completed', 'cancelled'] } };
-        let stats_taskCount = 0;
-        if (['WORKER', 'SUBCONTRACTOR', 'FOREMAN'].includes(role)) {
-            taskQuery.$or = [
-                { assignedTo: userId },
-                { createdBy: userId }
-            ];
-            // Also include counts from JobTask
-            const jobTaskCount = await JobTask.countDocuments({
-                companyId,
-                status: { $nin: ['completed', 'cancelled'] },
-                $or: [{ assignedTo: userId }, { assignedForeman: userId }]
-            });
-            const mainTaskCount = await Task.countDocuments(taskQuery);
-            stats_taskCount = mainTaskCount + jobTaskCount;
-        } else {
-            const [mainCount, jobCount] = await Promise.all([
-                Task.countDocuments(taskQuery),
-                JobTask.countDocuments({ companyId, status: { $nin: ['completed', 'cancelled'] } })
-            ]);
-            stats_taskCount = mainCount + jobCount;
+        let jobTaskQuery = { companyId, status: { $nin: ['completed', 'cancelled'] } };
+        
+        if (!isGlobalRole) {
+            if (role === 'PM') {
+                taskQuery.projectId = { $in: accessibleProjectIds };
+                jobTaskQuery.projectId = { $in: accessibleProjectIds };
+            } else {
+                // Field roles: assigned to them directly
+                taskQuery.$or = [{ assignedTo: userId }, { createdBy: userId }];
+                jobTaskQuery.$or = [{ assignedTo: userId }, { assignedForeman: userId }];
+            }
+        }
+
+        const [mainTaskCount, jobTaskCount] = await Promise.all([
+            Task.countDocuments(taskQuery),
+            JobTask.countDocuments(jobTaskQuery)
+        ]);
+        let stats_taskCount = mainTaskCount + jobTaskCount;
+
+        // 4. Issue Count (Role-aware)
+        let issueQuery = { companyId, status: 'open' };
+        if (!isGlobalRole) {
+            if (role === 'PM') {
+                issueQuery.projectId = { $in: accessibleProjectIds };
+            } else {
+                issueQuery.$or = [
+                    { assignedTo: userId },
+                    { reportedBy: userId }
+                ];
+            }
         }
 
         // 2. Unread Notifications & Issues & Projects/Jobs
         const [notifCount, issueCount, projectsData] = await Promise.all([
             Notification.countDocuments({ companyId, userId, isRead: false }),
-            Issue.countDocuments({ 
-                companyId, 
-                status: { $in: ['open', 'in_progress', 'in_review'] } 
-            }),
+            Issue.countDocuments(issueQuery),
             Project.find(projectFilter).select('name status').lean()
         ]);
 
