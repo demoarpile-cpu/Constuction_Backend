@@ -1342,18 +1342,39 @@ const getSidebarMetrics = async (req, res, next) => {
     try {
         const { companyId, _id: userId, role } = req.user;
 
-        // 1. Unread Notifications & Issues & Projects
-        const [notifCount, issueCount, projects] = await Promise.all([
-            Notification.countDocuments({ companyId, userId, isRead: false }),
-            Issue.countDocuments({ 
-                companyId, 
-                status: { $in: ['open', 'in_progress', 'in_review'] } 
-            }),
-            Project.find({ 
-                companyId, 
-                status: { $in: ['active', 'planning'] } 
-            }).select('name status').lean()
-        ]);
+        // 1. Determine Project Filter based on Role
+        let projectFilter = { companyId, status: { $in: ['active', 'planning', 'on-hold'] } };
+
+        if (role === 'PM') {
+            const [directProjects, jobProjects] = await Promise.all([
+                Project.find({
+                    companyId,
+                    $or: [{ pmIds: userId }, { pmId: userId }, { createdBy: userId }]
+                }).select('_id').lean(),
+                Job.find({
+                    $or: [{ foremanId: userId }, { createdBy: userId }]
+                }).select('projectId').lean()
+            ]);
+
+            const allProjectIds = [...new Set([
+                ...directProjects.map(p => p._id.toString()),
+                ...jobProjects.filter(j => j.projectId).map(j => j.projectId.toString())
+            ])];
+            projectFilter._id = { $in: allProjectIds };
+        } else if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            const assignedJobs = await Job.find({
+                companyId,
+                $or: [
+                    { assignedWorkers: userId },
+                    { foremanId: userId }
+                ]
+            }).select('projectId').lean();
+
+            const projectIds = [...new Set(assignedJobs.filter(j => j.projectId).map(j => j.projectId.toString()))];
+            projectFilter._id = { $in: projectIds };
+        }
+
+
 
         // 2. Unread Chat Count (Single Aggregation Optimization)
         const participants = await ChatParticipant.find({ userId }).select('roomId lastReadAt').lean();
@@ -1421,16 +1442,48 @@ const getSidebarMetrics = async (req, res, next) => {
             stats_taskCount = mainCount + jobCount;
         }
 
+        // 2. Unread Notifications & Issues & Projects/Jobs
+        const [notifCount, issueCount, projectsData] = await Promise.all([
+            Notification.countDocuments({ companyId, userId, isRead: false }),
+            Issue.countDocuments({ 
+                companyId, 
+                status: { $in: ['open', 'in_progress', 'in_review'] } 
+            }),
+            Project.find(projectFilter).select('name status').lean()
+        ]);
+
+        let finalProjects = projectsData.map(p => ({
+            _id: p._id,
+            name: p.name,
+            status: p.status,
+            isJob: false
+        }));
+
+        // If it's a Foreman/Worker/Subcontractor, we want to show JOBS in the quick selector
+        if (['FOREMAN', 'WORKER', 'SUBCONTRACTOR'].includes(role)) {
+            const assignedJobs = await Job.find({
+                companyId,
+                $or: [
+                    { assignedWorkers: userId },
+                    { foremanId: userId }
+                ]
+            }).select('name status projectId').lean();
+
+            finalProjects = assignedJobs.map(j => ({
+                _id: j._id,
+                name: j.name,
+                status: j.status,
+                projectId: j.projectId,
+                isJob: true
+            }));
+        }
+
         res.json({
             taskCount: stats_taskCount,
             issueCount,
             chatUnreadCount,
             notificationCount: notifCount,
-            projects: projects.map(p => ({
-                _id: p._id,
-                name: p.name,
-                status: p.status
-            }))
+            projects: finalProjects
         });
 
     } catch (error) {
