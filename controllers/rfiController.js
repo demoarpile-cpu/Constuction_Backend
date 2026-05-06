@@ -15,6 +15,11 @@ const getRFIs = async (req, res, next) => {
             const projects = await Project.find({ clientId: req.user._id }, '_id');
             const projectIds = projects.map(p => p._id);
             query.projectId = { $in: projectIds };
+
+            // Exclude subcontractor RFIs from client view
+            const User = require('../models/User');
+            const subs = await User.find({ role: 'SUBCONTRACTOR' }, '_id');
+            query.raisedBy = { $nin: subs.map(s => s._id) };
         } else if (req.user.role === 'SUBCONTRACTOR') {
             // Subcontractor: Only assigned RFI or project assigned (depending on exact requirement)
             // User request says "Only assigned RFI (if Sub)"
@@ -86,6 +91,11 @@ const getRFIStats = async (req, res, next) => {
             const projects = await Project.find({ clientId: req.user._id }, '_id');
             const projectIds = projects.map(p => p._id);
             query.projectId = { $in: projectIds };
+
+            // Exclude subcontractor RFIs from client stats
+            const User = require('../models/User');
+            const subs = await User.find({ role: 'SUBCONTRACTOR' }, '_id');
+            query.raisedBy = { $nin: subs.map(s => s._id) };
         } else if (req.user.role === 'SUBCONTRACTOR') {
             query.$or = [
                 { raisedBy: req.user._id },
@@ -111,13 +121,13 @@ const getRFIStats = async (req, res, next) => {
             RFI.countDocuments({ ...query, status: { $ne: 'closed' }, dueDate: { $lt: now } }),
             RFI.find({ ...query, priority: 'high', status: { $ne: 'closed' } })
                 .populate('projectId', 'name')
-                .populate('raisedBy', 'fullName')
+                .populate('raisedBy', 'fullName role')
                 .sort({ createdAt: -1 })
                 .limit(5),
             RFI.find(query)
                 .populate('projectId', 'name')
-                .populate('raisedBy', 'fullName')
-                .populate('assignedTo', 'fullName')
+                .populate('raisedBy', 'fullName role')
+                .populate('assignedTo', 'fullName role')
                 .sort({ createdAt: -1 })
                 .limit(5),
         ]);
@@ -128,7 +138,8 @@ const getRFIStats = async (req, res, next) => {
             dueDate: { $lt: now }
         })
             .populate('projectId', 'name')
-            .populate('assignedTo', 'fullName')
+            .populate('raisedBy', 'fullName role')
+            .populate('assignedTo', 'fullName role')
             .sort({ dueDate: 1 })
             .limit(5);
 
@@ -156,6 +167,11 @@ const getRFIById = async (req, res, next) => {
             const projects = await Project.find({ clientId: req.user._id }, '_id');
             const projectIds = projects.map(p => p._id);
             query.projectId = { $in: projectIds };
+
+            // Exclude subcontractor RFIs from client access
+            const User = require('../models/User');
+            const subs = await User.find({ role: 'SUBCONTRACTOR' }, '_id');
+            query.raisedBy = { $nin: subs.map(s => s._id) };
         } else if (req.user.role === 'SUBCONTRACTOR') {
             query.$or = [
                 { raisedBy: req.user._id },
