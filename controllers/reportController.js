@@ -10,6 +10,7 @@ const DailyLog = require('../models/DailyLog');
 const Equipment = require('../models/Equipment');
 const RFI = require('../models/RFI');
 const Job = require('../models/Job');
+const { getUserChatScope } = require('./chatController');
 const JobTask = require('../models/JobTask');
 const SubTask = require('../models/SubTask');
 const JobNote = require('../models/JobNote');
@@ -1397,40 +1398,44 @@ const getSidebarMetrics = async (req, res, next) => {
         }
 
         // 2. Unread Chat Count (Scoped to accessible rooms)
-        const participants = await ChatParticipant.find({ userId })
-            .populate({
-                path: 'roomId',
-                select: 'roomType projectId'
-            })
-            .lean();
+        const scope = await getUserChatScope(req.user);
+        const participants = await ChatParticipant.find({ userId }).populate('roomId');
 
         let chatUnreadCount = 0;
-        if (participants.length > 0) {
-            // Filter participants based on access scope
-            const allowedParticipants = participants.filter(p => {
-                const room = p.roomId;
-                if (!room) return false;
-                if (isGlobalRole) return true;
-                if (room.roomType === 'INTERNAL') return true;
-                if (room.roomType === 'PROJECT_GROUP') {
-                    return room.projectId && accessibleProjectIds.includes(room.projectId.toString());
-                }
-                if (room.roomType === 'DIRECT') {
-                    // For Direct, we'll allow it if they are a participant (already checked by ChatParticipant query)
-                    // and we'll assume the DM scope is handled at room creation time.
-                    return true;
-                }
-                return false;
-            });
+        for (const p of participants) {
+            const room = p.roomId;
+            if (!room || !room.isActive) continue;
 
-            const counts = await Promise.all(allowedParticipants.map(p =>
-                Chat.countDocuments({
-                    roomId: p.roomId._id,
+            let isAuthorized = false;
+            if (isGlobalRole) {
+                isAuthorized = true;
+            } else if (room.roomType === 'INTERNAL') {
+                isAuthorized = !scope.hideInternal;
+            } else if (room.roomType === 'PROJECT_GROUP') {
+                isAuthorized = room.projectId && scope.projectIdSet.has(String(room.projectId));
+            } else if (room.roomType === 'DIRECT') {
+                const pair = room.metadata?.get ? room.metadata.get('directPair') : room.metadata?.directPair;
+                if (pair) {
+                    const otherId = pair.split(':').find(id => id !== String(userId));
+                    if (otherId && scope.directUserIdSet.has(otherId)) {
+                        isAuthorized = true;
+                    }
+                } else {
+                    const others = await ChatParticipant.findOne({ roomId: room._id, userId: { $ne: userId } });
+                    if (others && scope.directUserIdSet.has(String(others.userId))) {
+                        isAuthorized = true;
+                    }
+                }
+            }
+
+            if (isAuthorized) {
+                const count = await Chat.countDocuments({
+                    roomId: room._id,
                     createdAt: { $gt: p.lastReadAt },
                     sender: { $ne: userId }
-                })
-            ));
-            chatUnreadCount = counts.reduce((acc, c) => acc + c, 0);
+                });
+                chatUnreadCount += count;
+            }
         }
 
         // 3. Task Count (Efficiently get total count scoped to role)
