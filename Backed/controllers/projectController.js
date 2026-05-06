@@ -352,7 +352,8 @@ const getClientProgress = async (req, res, next) => {
             completedWork,
             upcomingWork,
             startDate: project.startDate,
-            endDate: project.endDate
+            endDate: project.endDate,
+            budget: project.budget
         });
     } catch (error) {
         next(error);
