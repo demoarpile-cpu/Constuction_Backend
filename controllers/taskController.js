@@ -1423,7 +1423,7 @@ const getSchedule = async (req, res, next) => {
         const jobFormatted = jobTasksData.map(jt => ({
             id: jt._id,
             title: jt.title,
-            startDate: jt.startDate || jt.createdAt, // Use explicit startDate if set, else fallback to createdAt
+            startDate: jt.startDate,
             endDate: jt.dueDate,
             dueDate: jt.dueDate,
             status: jt.status === 'pending' ? 'todo' : jt.status,
@@ -1432,14 +1432,14 @@ const getSchedule = async (req, res, next) => {
             projectId: jt.jobId?.projectId,
             jobName: jt.jobId?.name,
             dependencies: [],
-            subTasks: [],
+            subTasks: subTasks.filter(st => st.taskId?.toString() === jt._id.toString()),
             isJobTask: true
         }));
 
         const mappedWorkerSubTasks = workerSubTasksForSchedule.map(st => ({
             id: st._id,
             title: st.title,
-            startDate: st.startDate || st.createdAt,
+            startDate: st.startDate,
             endDate: st.dueDate,
             dueDate: st.dueDate,
             status: st.status,
@@ -1454,7 +1454,10 @@ const getSchedule = async (req, res, next) => {
             const posA = a.position !== undefined ? a.position : 0;
             const posB = b.position !== undefined ? b.position : 0;
             if (posA !== posB) return posA - posB;
-            return new Date(b.createdAt || b.startDate) - new Date(a.createdAt || a.startDate);
+            
+            const dateA = new Date(a.startDate || a.createdAt);
+            const dateB = new Date(b.startDate || b.createdAt);
+            return dateB - dateA;
         });
 
         res.json(allTasks);
