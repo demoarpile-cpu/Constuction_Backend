@@ -8,6 +8,14 @@ const JobTask = require('../models/JobTask');
 const Todo = require('../models/Todo');
 const { dispatchNotification } = require('../utils/notificationHelper');
 
+// Helper to normalize dates to UTC midnight to avoid timezone shifts
+const normalizeDateToUTC = (date) => {
+    if (!date) return date;
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return date;
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+};
+
 // Helper: Validate if assigner can assign to given assignees based on role hierarchy
 const validateAssignmentHierarchy = async (assignerRole, assigneeIds) => {
     if (!assigneeIds || assigneeIds.length === 0) return null; // No assignees is fine
@@ -562,8 +570,8 @@ const createTask = async (req, res, next) => {
             assignedBy: req.user._id,
             priority: priority || 'Medium',
             status: status || 'todo',
-            dueDate: dueDate || undefined,
-            startDate: startDate || undefined,
+            dueDate: normalizeDateToUTC(dueDate) || undefined,
+            startDate: normalizeDateToUTC(startDate) || undefined,
             createdBy: req.user._id,
             statusHistory: [{ status: status || 'todo', changedBy: req.user._id }]
         });
@@ -771,6 +779,8 @@ const updateTask = async (req, res, next) => {
         const oldParentTaskId = String(task.parentTaskId || '');
 
         const updates = { ...req.body };
+        if (updates.startDate) updates.startDate = normalizeDateToUTC(updates.startDate);
+        if (updates.dueDate) updates.dueDate = normalizeDateToUTC(updates.dueDate);
         if (updates.assignedTo === "") updates.assignedTo = [];
 
         Object.assign(task, updates);
@@ -1127,8 +1137,8 @@ const createSubTask = async (req, res, next) => {
             companyId: req.user.companyId,
             title,
             assignedTo: assignedTo || null,
-            startDate: startDate || undefined,
-            dueDate: dueDate || undefined,
+            startDate: normalizeDateToUTC(startDate) || undefined,
+            dueDate: normalizeDateToUTC(dueDate) || undefined,
             remarks: remarks || '',
             priority: priority || 'Medium',
             createdBy: req.user._id
